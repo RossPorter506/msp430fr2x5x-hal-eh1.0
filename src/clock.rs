@@ -12,6 +12,7 @@ use core::arch::asm;
 
 use crate::delay::Delay;
 use crate::fram::{Fram, WaitStates};
+use msp430::asm;
 use msp430fr2355 as pac;
 use pac::cs::csctl1::DCORSEL_A;
 use pac::cs::csctl4::{SELA_A, SELMS_A};
@@ -303,7 +304,96 @@ impl<SMCLK: SmclkState> ClockConfig<MclkDefined, SMCLK> {
             msp430::asm::nop();
             fll_on();
 
-            while !self.periph.csctl7.read().fllunlock().is_fllunlock_0() {}
+            while !self.periph.csctl7.read().fllunlock().is_fllunlock_0() {
+                self.periph.csctl7.write(|w| w.dcoffg().clear_bit());
+                if self.periph.csctl7.read().dcoffg().bit_is_set() {
+                    return;
+                }
+            }
+        }
+    }
+    fn configure_dco_fll_software(&self) {
+        if let MclkSel::Dcoclk(freq) = self.mclk.0 {
+            let mut old_dco_tap: u16 = 0xffff;
+            let mut new_dco_tap = 0xffff;
+            let mut new_dco_delta = 0xffff;
+            let mut best_dco_delta = 0xffff;
+            let mut cs_ctl0_copy = 0;
+            let mut cs_ctl1_copy = 0;
+            let mut cs_ctl0_read = 0;
+            let mut cs_ctl1_read = 0;
+            let mut dco_freq_trim = 3;
+            let mut found_best: bool = false;
+            let mclk_freq_khz = (freq.freq() / 1_000) as u16;
+
+            self.periph.csctl3.write(|w| w.selref().refoclk());
+
+            while !found_best { // Poll until endLoop == 1
+                //CSCTL0 = 0x100;                         // DCO Tap = 256
+                unsafe { self.periph.csctl0.write(|w| w.dco().bits(256)); }
+                //CSCTL7 &= ~DCOFFG;
+                self.periph.csctl7.write(|w| w.dcoffg().clear_bit());
+                //while (CSCTL7 & DCOFFG) {               // Test DCO fault flag
+                while self.periph.csctl7.read().dcoffg().bit_is_set() {
+                    //CSCTL7 &= ~DCOFFG;
+                    self.periph.csctl7.write(|w| w.dcoffg().clear_bit());                  // Clear DCO fault flag
+                };
+
+                // __delay_cycles((unsigned int)3000 * MCLK_FREQ_MHZ);// Wait FLL lock status (FLLUNLOCK) to be stable
+                for _ in 0..mclk_freq_khz {
+                    asm::nop();
+                }
+                
+                                                                // Suggest to wait 24 cycles of divided FLL reference clock
+                //while((CSCTL7 & (FLLUNLOCK0 | FLLUNLOCK1)) && ((CSCTL7 & DCOFFG) == 0)) {}
+                while (self.periph.csctl7.read().fllunlock().is_fllunlock_1() || self.periph.csctl7.read().fllunlock().is_fllunlock_2()) && self.periph.csctl7.read().dcoffg().bit_is_clear() {}
+
+                //csCtl0Read = CSCTL0;                   // Read CSCTL0
+                cs_ctl0_read = self.periph.csctl0.read().bits();
+                //csCtl1Read = CSCTL1;                   // Read CSCTL1
+                cs_ctl1_read = self.periph.csctl1.read().bits();
+
+                old_dco_tap = new_dco_tap;                 // Record DCOTAP value of last time
+                new_dco_tap = cs_ctl0_read & 0x01ff;       // Get DCOTAP value of this time
+                dco_freq_trim = (cs_ctl1_read & 0x0070)>>4;// Get DCOFTRIM value
+
+                if new_dco_tap < 256 {                   // DCOTAP < 256
+                    new_dco_delta = 256 - new_dco_tap;     // Delta value between DCPTAP and 256
+                    if (old_dco_tap != 0xffff) && (old_dco_tap >= 256) { // DCOTAP cross 256
+                        found_best = true;
+                    }                   // Stop while loop
+                    else {
+                        dco_freq_trim -= 1;
+                        //CSCTL1 = (csCtl1Read & (~DCOFTRIM)) | (dcoFreqTrim<<4);
+                        unsafe {self.periph.csctl1.write(|w| w.bits( (cs_ctl1_read & !(0x0070)) | (dco_freq_trim<<4) ));}
+                    }
+                }
+                else {                                 // DCOTAP >= 256
+                    new_dco_delta = new_dco_tap - 256;     // Delta value between DCPTAP and 256
+                    if old_dco_tap < 256 {              // DCOTAP cross 256
+                        found_best = true;                   // Stop while loop
+                    }
+                    else {
+                        dco_freq_trim += 1;
+                        //CSCTL1 = (csCtl1Read & (~DCOFTRIM)) | (dcoFreqTrim<<4);
+                        unsafe {self.periph.csctl1.write(|w| w.bits( (cs_ctl1_read & !(0x0070)) | (dco_freq_trim<<4) ));}
+                    }
+                }
+
+                if new_dco_delta < best_dco_delta {        // Record DCOTAP closest to 256
+                    cs_ctl0_copy = cs_ctl0_read;
+                    cs_ctl1_copy = cs_ctl1_read;
+                    best_dco_delta = new_dco_delta;
+                }
+            }
+
+            //CSCTL0 = csCtl0Copy;                         // Reload locked DCOTAP
+            unsafe { self.periph.csctl0.write(|w| w.bits(cs_ctl0_copy)); }
+            //CSCTL1 = csCtl1Copy;                         // Reload locked DCOFTRIM
+            unsafe { self.periph.csctl1.write(|w| w.bits(cs_ctl1_copy)); }
+            //while(CSCTL7 & (FLLUNLOCK0 | FLLUNLOCK1)) {} // Poll until FLL is locked
+            while (self.periph.csctl7.read().fllunlock().is_fllunlock_1() || self.periph.csctl7.read().fllunlock().is_fllunlock_2()) && self.periph.csctl7.read().dcoffg().bit_is_clear() {}
+            self.periph.csctl7.write(|w| w.dcoffg().clear_bit());
         }
     }
 
@@ -345,7 +435,7 @@ impl ClockConfig<MclkDefined, SmclkDefined> {
     pub fn freeze(self, fram: &mut Fram) -> (Smclk, Aclk, Delay) {
         let mclk_freq = self.mclk.0.freq() >> (self.mclk_div as u32);
         unsafe { Self::configure_fram(fram, mclk_freq) };
-        self.configure_dco_fll();
+        self.configure_dco_fll_software();
         self.configure_cs();
         (
             Smclk(mclk_freq >> (self.smclk.0 as u32)),
@@ -361,7 +451,7 @@ impl ClockConfig<MclkDefined, SmclkDisabled> {
     #[inline]
     pub fn freeze(self, fram: &mut Fram) -> (Aclk, Delay) {
         let mclk_freq = self.mclk.0.freq() >> (self.mclk_div as u32);
-        self.configure_dco_fll();
+        self.configure_dco_fll_software();
         unsafe { Self::configure_fram(fram, mclk_freq) };
         self.configure_cs();
         (Aclk(self.aclk_sel.freq()), Delay::new(mclk_freq))
