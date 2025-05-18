@@ -26,7 +26,8 @@ pub const VLOCLK: u16 = 10000;
 enum MclkSel {
     Refoclk,
     Vloclk,
-    Dcoclk(DcoclkFreqSel),
+    DcoclkFactoryTrim,
+    DcoclkSoftwareTrim(DcoclkFreqSel),
 }
 
 impl MclkSel {
@@ -35,7 +36,8 @@ impl MclkSel {
         match self {
             MclkSel::Vloclk => VLOCLK as u32,
             MclkSel::Refoclk => REFOCLK as u32,
-            MclkSel::Dcoclk(sel) => sel.freq(),
+            MclkSel::DcoclkFactoryTrim => REFOCLK as u32 * DcoclkFreqSel::_24MHz.multiplier() as u32,
+            MclkSel::DcoclkSoftwareTrim(sel) => sel.freq(),
         }
     }
 
@@ -44,7 +46,8 @@ impl MclkSel {
         match self {
             MclkSel::Vloclk => SELMS_A::VLOCLK,
             MclkSel::Refoclk => SELMS_A::REFOCLK,
-            MclkSel::Dcoclk(_) => SELMS_A::DCOCLKDIV,
+            MclkSel::DcoclkFactoryTrim => SELMS_A::DCOCLKDIV,
+            MclkSel::DcoclkSoftwareTrim(_) => SELMS_A::DCOCLKDIV,
         }
     }
 }
@@ -231,18 +234,34 @@ impl<MCLK, SMCLK> ClockConfig<MCLK, SMCLK> {
         }
     }
 
-    /// Select DCOCLK for MCLK with FLL for stabilization. Frequency is `target_freq / mclk_div` Hz.
-    /// This setting selects the default factory trim for DCO trimming and performs no extra
-    /// calibration, so only a select few frequency targets can be selected.
+    /// Select DCOCLK for MCLK with FLL for stabilization, using software trim to set DCOCLK to a custom frequency. 
+    /// MCLK frequency is `target_freq / mclk_div` Hz. Software trim takes much longer than factory trim.
+    /// 
+    /// This option is recommeded only if you can't obtain your desired MCLK frequency using a 24 MHz DCOCLK and divider.
     #[inline]
-    pub fn mclk_dcoclk(
+    pub fn mclk_dcoclk_custom(
         self,
         target_freq: DcoclkFreqSel,
         mclk_div: MclkDiv,
     ) -> ClockConfig<MclkDefined, SMCLK> {
         ClockConfig {
             mclk_div,
-            ..make_clkconf!(self, MclkDefined(MclkSel::Dcoclk(target_freq)), self.smclk)
+            ..make_clkconf!(self, MclkDefined(MclkSel::DcoclkSoftwareTrim(target_freq)), self.smclk)
+        }
+    }
+
+    /// Select DCOCLK for MCLK with FLL for stabilization, setting DCOCLK to the factory-trimmed 24 MHz setting. 
+    /// MCLK frequency is `24 MHz / mclk_div`. This performs factory trim, which is much faster than software trim. 
+    /// 
+    /// This option is recommended provided you can obtain the MCLK speed you desire using the provided divider value.
+    #[inline]
+    pub fn mclk_dcoclk_24mhz(
+        self,
+        mclk_div: MclkDiv,
+    ) -> ClockConfig<MclkDefined, SMCLK> {
+        ClockConfig {
+            mclk_div,
+            ..make_clkconf!(self, MclkDefined(MclkSel::DcoclkFactoryTrim), self.smclk)
         }
     }
 
@@ -273,12 +292,12 @@ fn fll_on() {
 
 impl<SMCLK: SmclkState> ClockConfig<MclkDefined, SMCLK> {
     #[inline]
-    fn configure_dco_fll(&self) {
+    fn dco_factory_trim(&self) {
         // Run FLL configuration procedure from the user's guide if we are using DCO
-        if let MclkSel::Dcoclk(target_freq) = self.mclk.0 {
-            fll_off();
-            msp430::asm::nop();
-            msp430::asm::nop();
+        let target_freq = DcoclkFreqSel::_24MHz;
+        fll_off();
+        msp430::asm::nop();
+        msp430::asm::nop();
             msp430::asm::nop();
             msp430::asm::nop();
             msp430::asm::nop();
@@ -517,7 +536,12 @@ impl ClockConfig<MclkDefined, SmclkDefined> {
     pub fn freeze(self, fram: &mut Fram) -> (Smclk, Aclk, Delay) {
         let mclk_freq = self.mclk.0.freq() >> (self.mclk_div as u32);
         unsafe { Self::configure_fram(fram, mclk_freq) };
-        self.configure_dco_fll_software();
+        match self.mclk.0 {
+            MclkSel::Refoclk | MclkSel::Vloclk => (),
+            MclkSel::DcoclkFactoryTrim => self.dco_factory_trim(),
+            MclkSel::DcoclkSoftwareTrim(fsel) => self.dco_software_trim(fsel),
+        };
+        
         self.configure_cs();
         (
             Smclk(mclk_freq >> (self.smclk.0 as u32)),
@@ -533,8 +557,13 @@ impl ClockConfig<MclkDefined, SmclkDisabled> {
     #[inline]
     pub fn freeze(self, fram: &mut Fram) -> (Aclk, Delay) {
         let mclk_freq = self.mclk.0.freq() >> (self.mclk_div as u32);
-        self.configure_dco_fll_software();
         unsafe { Self::configure_fram(fram, mclk_freq) };
+        match self.mclk.0 {
+            MclkSel::Refoclk | MclkSel::Vloclk  => (),
+            MclkSel::DcoclkFactoryTrim          => self.dco_factory_trim(),
+            MclkSel::DcoclkSoftwareTrim(fsel)   => self.dco_software_trim(fsel),
+        };
+
         self.configure_cs();
         (Aclk(self.aclk_sel.freq()), Delay::new(mclk_freq))
     }
