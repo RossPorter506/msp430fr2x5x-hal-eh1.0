@@ -308,93 +308,175 @@ impl<SMCLK: SmclkState> ClockConfig<MclkDefined, SMCLK> {
                 self.periph.csctl7.write(|w| w.dcoffg().clear_bit());
                 if self.periph.csctl7.read().dcoffg().bit_is_set() {
                     return;
-                }
             }
         }
     }
-    fn configure_dco_fll_software(&self) {
-        if let MclkSel::Dcoclk(freq) = self.mclk.0 {
-            let mut old_dco_tap: u16 = 0xffff;
-            let mut new_dco_tap = 0xffff;
-            let mut new_dco_delta = 0xffff;
-            let mut best_dco_delta = 0xffff;
-            let mut cs_ctl0_copy = 0;
-            let mut cs_ctl1_copy = 0;
-            let mut cs_ctl0_read = 0;
-            let mut cs_ctl1_read = 0;
-            let mut dco_freq_trim = 3;
-            let mut found_best: bool = false;
-            let mclk_freq_khz = (freq.freq() / 1_000) as u16;
 
-            self.periph.csctl3.write(|w| w.selref().refoclk());
+    fn dco_software_trim(&self, dco_freq_sel: DcoclkFreqSel) {
+        let dco_freq_hz = dco_freq_sel.freq().clamp(REFOCLK as u32, 24_000_000);
 
-            while !found_best { // Poll until endLoop == 1
-                //CSCTL0 = 0x100;                         // DCO Tap = 256
-                unsafe { self.periph.csctl0.write(|w| w.dco().bits(256)); }
+        // Calulate ratio assuming using REFOCLK
+        self.periph.csctl3.modify(|_, w| w.selref().refoclk());
+        let ratio: u16 = (dco_freq_hz / (REFOCLK as u32)) as u16;
+
+        let x: u16 = ratio * 32;
+    
+        //Do not want the Oscillator Fault Flag to trigger during this routine.
+        //So disable interrupt, save the state, and reapply later if necessary.
+        //let ofie_was_on = unsafe{ pac::Peripherals::conjure().SFR.sfrie1.read().ofie().bit_is_set() };
+        unsafe { pac::Peripherals::conjure().SFR.sfrie1.clear_bits(|w| w.ofie().clear_bit()) };
+    
+        // Disable FLL loop control. This is needed to prevent the FLL from acting as we are 
+        // making fundamental modifications to the clock setup.
+        fll_off();
+    
+        // Set DCO to lowest Tap
+        self.periph.csctl0.write(|w| unsafe { w.bits(0) });
+
+        // Set FLLD, FLLN
+        unsafe { self.periph.csctl2.write(|w| w.flld()._1().flln().bits(dco_freq_sel.multiplier() - 1)) };
+
+        // Set DCORSEL
+        let (starting_dcoftrim, dcorsel) = match dco_freq_hz {
+                     0..= 1_500_000 => (3, DCORSEL_A::DCORSEL_0),
+             1_500_001..= 3_000_000 => (3, DCORSEL_A::DCORSEL_1),
+             3_000_001..= 6_000_000 => (3, DCORSEL_A::DCORSEL_2),
+             6_000_001..=10_000_000 => (3, DCORSEL_A::DCORSEL_3),
+            10_000_001..=14_000_000 => (3, DCORSEL_A::DCORSEL_4),
+            14_000_001..=18_000_000 => (3, DCORSEL_A::DCORSEL_5),
+            18_000_001..=22_000_000 => (0, DCORSEL_A::DCORSEL_6),
+            22_000_001..            => (0, DCORSEL_A::DCORSEL_7),
+        };
+        self.periph.csctl1.modify(|_,w| w.dcorsel().variant(dcorsel));
+        
+        // Re-enable FLL
+        fll_on();
+
+        // // Enable DCO frequency trim
+        self.periph.csctl1.modify(|_, w| unsafe{ w.dcoftrim().bits(starting_dcoftrim).dcoftrimen().set_bit()} );
+        //unsafe { self.periph.csctl1.set_bits(|w| w.dcoftrimen().set_bit()) };
+    
+        // Calculates DCO frequency trim values
+        self.configure_dcoftrim(dco_freq_hz);
+        
+        while self.periph.csctl7.read().fllunlock().is_fllunlock_1() || 
+              self.periph.csctl7.read().fllunlock().is_fllunlock_2() || 
+              self.periph.csctl7.read().dcoffg().bit_is_set() {
+            //Clear OSC fault flags
+            unsafe { self.periph.csctl7.clear_bits(|w| w.dcoffg().clear_bit()) };
+    
+            //Clear OFIFG fault flag
+            unsafe { pac::Peripherals::conjure().SFR.sfrifg1.clear_bits(|w| w.ofifg().clear_bit()) };
+        }
+
+        for _ in 0..x {
+            for _ in 0..10 { // ~30 cycle delay
+                msp430::asm::nop();
+            }
+        }
+
+        // Reapply Oscillator Fault Interrupt Enable if needed
+        // if ofie_was_on {
+        //     unsafe{ pac::Peripherals::conjure().SFR.sfrie1.set_bits(|w| w.ofie().set_bit()) };
+        // }
+    }
+
+    fn configure_dcoftrim(&self, dco_freq_hz: u32) {
+        let mut old_dco_tap;
+        let mut new_dco_tap = 0xffff;
+        let mut best_dco_delta = 0xffff;
+        let mut best_csctl0 = 0;
+        let mut best_csctl1 = 0;
+        let mut found_best: bool = false;
+        let mclk_freq_khz = (dco_freq_hz / 1_000) as u16;
+        //let mut bak_writer = BakMemDebug::new();
+
+        for _ in 0..=7 {
+            if found_best {
+                //bak_writer.write_to_next(0xFFFF);
+                break;
+            }
+            //CSCTL0 = 0x100;                         // DCO Tap = 256
+            unsafe { self.periph.csctl0.write(|w| w.dco().bits(256)); }
+            //CSCTL7 &= ~DCOFFG;
+            unsafe { self.periph.csctl7.clear_bits(|w| w.dcoffg().clear_bit()) };
+            //while (CSCTL7 & DCOFFG) {               // Test DCO fault flag
+            while self.periph.csctl7.read().dcoffg().bit_is_set() {
                 //CSCTL7 &= ~DCOFFG;
-                self.periph.csctl7.write(|w| w.dcoffg().clear_bit());
-                //while (CSCTL7 & DCOFFG) {               // Test DCO fault flag
-                while self.periph.csctl7.read().dcoffg().bit_is_set() {
-                    //CSCTL7 &= ~DCOFFG;
-                    self.periph.csctl7.write(|w| w.dcoffg().clear_bit());                  // Clear DCO fault flag
-                };
+                unsafe { self.periph.csctl7.clear_bits(|w| w.dcoffg().clear_bit()) };                  // Clear DCO fault flag
+            };
 
-                // __delay_cycles((unsigned int)3000 * MCLK_FREQ_MHZ);// Wait FLL lock status (FLLUNLOCK) to be stable
-                for _ in 0..mclk_freq_khz {
-                    asm::nop();
+            // Suggest to wait 24 cycles of divided FLL reference clock
+            // __delay_cycles((unsigned int)3000 * MCLK_FREQ_MHZ);// Wait FLL lock status (FLLUNLOCK) to be stable
+            for _ in 0..mclk_freq_khz {
+                asm::nop();
+            }
+                                                            
+            //while((CSCTL7 & (FLLUNLOCK0 | FLLUNLOCK1)) && ((CSCTL7 & DCOFFG) == 0)) {}
+            while self.periph.csctl7.read().fllunlock().is_fllunlock_1() || self.periph.csctl7.read().fllunlock().is_fllunlock_2() {
+                if self.periph.csctl7.read().dcoffg().bit_is_set() {
+                    break;
                 }
-                
-                                                                // Suggest to wait 24 cycles of divided FLL reference clock
-                //while((CSCTL7 & (FLLUNLOCK0 | FLLUNLOCK1)) && ((CSCTL7 & DCOFFG) == 0)) {}
-                while (self.periph.csctl7.read().fllunlock().is_fllunlock_1() || self.periph.csctl7.read().fllunlock().is_fllunlock_2()) && self.periph.csctl7.read().dcoffg().bit_is_clear() {}
+            }
+            let is_err = self.periph.csctl7.read().dcoffg().bit_is_set();
+            
+            //csCtl0Read = CSCTL0;                   // Read CSCTL0
+            let csctl0 = self.periph.csctl0.read().bits();
+            //csCtl1Read = CSCTL1;                   // Read CSCTL1
+            let csctl1 = self.periph.csctl1.read().bits();
 
-                //csCtl0Read = CSCTL0;                   // Read CSCTL0
-                cs_ctl0_read = self.periph.csctl0.read().bits();
-                //csCtl1Read = CSCTL1;                   // Read CSCTL1
-                cs_ctl1_read = self.periph.csctl1.read().bits();
-
-                old_dco_tap = new_dco_tap;                 // Record DCOTAP value of last time
-                new_dco_tap = cs_ctl0_read & 0x01ff;       // Get DCOTAP value of this time
-                dco_freq_trim = (cs_ctl1_read & 0x0070)>>4;// Get DCOFTRIM value
-
-                if new_dco_tap < 256 {                   // DCOTAP < 256
-                    new_dco_delta = 256 - new_dco_tap;     // Delta value between DCPTAP and 256
-                    if (old_dco_tap != 0xffff) && (old_dco_tap >= 256) { // DCOTAP cross 256
-                        found_best = true;
-                    }                   // Stop while loop
-                    else {
-                        dco_freq_trim -= 1;
-                        //CSCTL1 = (csCtl1Read & (~DCOFTRIM)) | (dcoFreqTrim<<4);
-                        unsafe {self.periph.csctl1.write(|w| w.bits( (cs_ctl1_read & !(0x0070)) | (dco_freq_trim<<4) ));}
+            old_dco_tap = new_dco_tap;                 // Record DCOTAP value of last time
+            //new_dco_tap = cs_ctl0_read & 0x01ff;       // Get DCOTAP value of this time
+            new_dco_tap = self.periph.csctl0.read().dco().bits();       // Get DCOTAP value of this time
+            //dco_freq_trim = (cs_ctl1_read & 0x0070)>>4;// Get DCOFTRIM value
+            let dco_freq_trim = self.periph.csctl1.read().dcoftrim().bits();
+            //bak_writer.write_to_next(((new_dco_tap) << 8) + ((is_err as u16) << 4) + (dco_freq_trim as u16));
+            let new_dco_delta;
+            if new_dco_tap < 256 {                   // DCOTAP < 256
+                new_dco_delta = 256 - new_dco_tap;     // Delta value between DCPTAP and 256
+                if (old_dco_tap != 0xffff) && (old_dco_tap >= 256) { // DCOTAP cross 256
+                    found_best = true;
+                }                   // Stop while loop
+                else {
+                    //CSCTL1 = (csCtl1Read & (~DCOFTRIM)) | (dcoFreqTrim<<4);
+                    //unsafe {self.periph.csctl1.write(|w| w.bits( (cs_ctl1_read & !(0x0070)) | (dco_freq_trim<<4) ));}
+                    if dco_freq_trim == 0 {
+                        break;
                     }
+                    unsafe {self.periph.csctl1.modify(|_, w| w.dcoftrim().bits(dco_freq_trim - 1))};
                 }
-                else {                                 // DCOTAP >= 256
+            }
+            else {                                 // DCOTAP >= 256
                     new_dco_delta = new_dco_tap - 256;     // Delta value between DCPTAP and 256
                     if old_dco_tap < 256 {              // DCOTAP cross 256
-                        found_best = true;                   // Stop while loop
-                    }
-                    else {
-                        dco_freq_trim += 1;
-                        //CSCTL1 = (csCtl1Read & (~DCOFTRIM)) | (dcoFreqTrim<<4);
-                        unsafe {self.periph.csctl1.write(|w| w.bits( (cs_ctl1_read & !(0x0070)) | (dco_freq_trim<<4) ));}
-                    }
+                    found_best = true;                   // Stop while loop
                 }
-
-                if new_dco_delta < best_dco_delta {        // Record DCOTAP closest to 256
-                    cs_ctl0_copy = cs_ctl0_read;
-                    cs_ctl1_copy = cs_ctl1_read;
-                    best_dco_delta = new_dco_delta;
+                else {
+                    //CSCTL1 = (csCtl1Read & (~DCOFTRIM)) | (dcoFreqTrim<<4);
+                    //unsafe {self.periph.csctl1.write(|w| w.bits( (cs_ctl1_read & !(0x0070)) | (dco_freq_trim<<4) ));}
+                    if dco_freq_trim == 7 {
+                        break;
+                    }
+                    unsafe {self.periph.csctl1.modify(|_, w| w.dcoftrim().bits(dco_freq_trim + 1))};
                 }
             }
 
-            //CSCTL0 = csCtl0Copy;                         // Reload locked DCOTAP
-            unsafe { self.periph.csctl0.write(|w| w.bits(cs_ctl0_copy)); }
-            //CSCTL1 = csCtl1Copy;                         // Reload locked DCOFTRIM
-            unsafe { self.periph.csctl1.write(|w| w.bits(cs_ctl1_copy)); }
-            //while(CSCTL7 & (FLLUNLOCK0 | FLLUNLOCK1)) {} // Poll until FLL is locked
-            while (self.periph.csctl7.read().fllunlock().is_fllunlock_1() || self.periph.csctl7.read().fllunlock().is_fllunlock_2()) && self.periph.csctl7.read().dcoffg().bit_is_clear() {}
-            self.periph.csctl7.write(|w| w.dcoffg().clear_bit());
+            if new_dco_delta < best_dco_delta {        // Record DCOTAP closest to 256
+                best_csctl0 = csctl0;
+                best_csctl1 = csctl1;
+                best_dco_delta = new_dco_delta;
+            }
         }
+        //bak_writer.write_to_next(0xFFFF);
+        
+
+        //CSCTL0 = csCtl0Copy;                         // Reload locked DCOTAP
+        unsafe { self.periph.csctl0.write(|w| w.bits(best_csctl0)); }
+        //CSCTL1 = csCtl1Copy;                         // Reload locked DCOFTRIM
+        unsafe { self.periph.csctl1.write(|w| w.bits(best_csctl1)); }
+        //while(CSCTL7 & (FLLUNLOCK0 | FLLUNLOCK1)) {} // Poll until FLL is locked
+        while self.periph.csctl7.read().fllunlock().is_fllunlock_1() || self.periph.csctl7.read().fllunlock().is_fllunlock_2() {}
+        //self.periph.csctl7.write(|w| w.dcoffg().clear_bit());
     }
 
     #[inline]
