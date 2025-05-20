@@ -103,6 +103,13 @@ impl DcoclkFreqSel {
         }
     }
 
+    // Factory trimmed DCO value. See Table 6-70 from datasheet
+    fn dco(self) -> u16 {
+        match self {
+            DcoclkFreqSel::_16MHz => unsafe{ *(0x1A2E as *const u16) },
+            DcoclkFreqSel::_24MHz => unsafe{ *(0x1A30 as *const u16) },
+        }
+    }
     /// Numerical frequency
     #[inline]
     pub fn freq(self) -> u32 {
@@ -274,106 +281,103 @@ impl<SMCLK: SmclkState> ClockConfig<MclkDefined, SMCLK> {
         fll_off();
         msp430::asm::nop();
         msp430::asm::nop();
-            msp430::asm::nop();
-            msp430::asm::nop();
-            msp430::asm::nop();
-            msp430::asm::nop();
+        msp430::asm::nop();
+        msp430::asm::nop();
+        msp430::asm::nop();
+        msp430::asm::nop();
 
-            self.periph.csctl3.write(|w| w.selref().refoclk());
-            self.periph.csctl0.write(|w| unsafe { w.bits(0) });
-            self.periph
-                .csctl1
-                .write(|w| w.dcorsel().variant(target_freq.dcorsel()));
-            self.periph.csctl2.write(|w| {
-                unsafe { w.flln().bits(target_freq.multiplier() - 1) }
-                    .flld()
-                    ._1()
-            });
+        self.periph.csctl3.write(|w| w.selref().refoclk());
+        self.periph.csctl0.write(|w| unsafe { w.bits(target_freq.dco()) });
+        self.periph
+            .csctl1
+            .write(|w| w.dcorsel().variant(target_freq.dcorsel()));
+        self.periph.csctl2.write(|w| {
+            unsafe { w.flln().bits(target_freq.multiplier() - 1) }
+                .flld()
+                ._1()
+        });
 
-            msp430::asm::nop();
-            msp430::asm::nop();
-            msp430::asm::nop();
-            msp430::asm::nop();
-            msp430::asm::nop();
-            msp430::asm::nop();
-            msp430::asm::nop();
-            fll_on();
+        msp430::asm::nop();
+        msp430::asm::nop();
+        msp430::asm::nop();
+        msp430::asm::nop();
+        msp430::asm::nop();
+        msp430::asm::nop();
+        msp430::asm::nop();
+        fll_on();
 
-            while !self.periph.csctl7.read().fllunlock().is_fllunlock_0() {
-                self.periph.csctl7.write(|w| w.dcoffg().clear_bit());
-                if self.periph.csctl7.read().dcoffg().bit_is_set() {
-                    return;
-            }
+        while !self.periph.csctl7.read().fllunlock().is_fllunlock_0() {
+            asm::nop();
         }
     }
 
     fn dco_software_trim(&self, dco_freq_khz: u16) {
             let dco_freq_hz = (dco_freq_khz as u32 * 1000).clamp(REFOCLK as u32, 24_000_000);
 
-        // Calulate ratio assuming using REFOCLK
-        self.periph.csctl3.modify(|_, w| w.selref().refoclk());
-        let ratio: u16 = (dco_freq_hz / (REFOCLK as u32)) as u16;
+            // Calulate ratio assuming using REFOCLK
+            self.periph.csctl3.modify(|_, w| w.selref().refoclk());
+            let ratio: u16 = (dco_freq_hz / (REFOCLK as u32)) as u16;
 
-        let x: u16 = ratio * 32;
-    
-        //Do not want the Oscillator Fault Flag to trigger during this routine.
-        //So disable interrupt, save the state, and reapply later if necessary.
-        //let ofie_was_on = unsafe{ pac::Peripherals::conjure().SFR.sfrie1.read().ofie().bit_is_set() };
-        unsafe { pac::Peripherals::conjure().SFR.sfrie1.clear_bits(|w| w.ofie().clear_bit()) };
-    
-        // Disable FLL loop control. This is needed to prevent the FLL from acting as we are 
-        // making fundamental modifications to the clock setup.
-        fll_off();
-    
-        // Set DCO to lowest Tap
-        self.periph.csctl0.write(|w| unsafe { w.bits(0) });
+            let x: u16 = ratio * 32;
+        
+            //Do not want the Oscillator Fault Flag to trigger during this routine.
+            //So disable interrupt, save the state, and reapply later if necessary.
+            //let ofie_was_on = unsafe{ pac::Peripherals::conjure().SFR.sfrie1.read().ofie().bit_is_set() };
+            unsafe { pac::Peripherals::conjure().SFR.sfrie1.clear_bits(|w| w.ofie().clear_bit()) };
+        
+            // Disable FLL loop control. This is needed to prevent the FLL from acting as we are 
+            // making fundamental modifications to the clock setup.
+            fll_off();
 
-        // Set FLLD, FLLN
+            // Set DCO to lowest Tap
+            self.periph.csctl0.write(|w| unsafe { w.bits(0) });
+
+            // Set FLLD, FLLN
             unsafe { self.periph.csctl2.write(|w| w.flld()._1().flln().bits(ratio - 1)) };
 
-        // Set DCORSEL
-        let (starting_dcoftrim, dcorsel) = match dco_freq_hz {
-                     0..= 1_500_000 => (3, DCORSEL_A::DCORSEL_0),
-             1_500_001..= 3_000_000 => (3, DCORSEL_A::DCORSEL_1),
-             3_000_001..= 6_000_000 => (3, DCORSEL_A::DCORSEL_2),
-             6_000_001..=10_000_000 => (3, DCORSEL_A::DCORSEL_3),
-            10_000_001..=14_000_000 => (3, DCORSEL_A::DCORSEL_4),
-            14_000_001..=18_000_000 => (3, DCORSEL_A::DCORSEL_5),
-            18_000_001..=22_000_000 => (0, DCORSEL_A::DCORSEL_6),
-            22_000_001..            => (0, DCORSEL_A::DCORSEL_7),
-        };
-        self.periph.csctl1.modify(|_,w| w.dcorsel().variant(dcorsel));
-        
-        // Re-enable FLL
-        fll_on();
+            // Set DCORSEL
+            let (starting_dcoftrim, dcorsel) = match dco_freq_hz {
+                         0..= 1_500_000 => (3, DCORSEL_A::DCORSEL_0),
+                 1_500_001..= 3_000_000 => (3, DCORSEL_A::DCORSEL_1),
+                 3_000_001..= 6_000_000 => (3, DCORSEL_A::DCORSEL_2),
+                 6_000_001..=10_000_000 => (3, DCORSEL_A::DCORSEL_3),
+                10_000_001..=14_000_000 => (3, DCORSEL_A::DCORSEL_4),
+                14_000_001..=18_000_000 => (3, DCORSEL_A::DCORSEL_5),
+                18_000_001..=22_000_000 => (0, DCORSEL_A::DCORSEL_6),
+                22_000_001..            => (0, DCORSEL_A::DCORSEL_7),
+            };
+            self.periph.csctl1.modify(|_,w| w.dcorsel().variant(dcorsel));
 
-        // // Enable DCO frequency trim
-        self.periph.csctl1.modify(|_, w| unsafe{ w.dcoftrim().bits(starting_dcoftrim).dcoftrimen().set_bit()} );
-        //unsafe { self.periph.csctl1.set_bits(|w| w.dcoftrimen().set_bit()) };
-    
-        // Calculates DCO frequency trim values
-        self.configure_dcoftrim(dco_freq_hz);
-        
-        while self.periph.csctl7.read().fllunlock().is_fllunlock_1() || 
-              self.periph.csctl7.read().fllunlock().is_fllunlock_2() || 
-              self.periph.csctl7.read().dcoffg().bit_is_set() {
-            //Clear OSC fault flags
-            unsafe { self.periph.csctl7.clear_bits(|w| w.dcoffg().clear_bit()) };
-    
-            //Clear OFIFG fault flag
-            unsafe { pac::Peripherals::conjure().SFR.sfrifg1.clear_bits(|w| w.ofifg().clear_bit()) };
-        }
+            // Re-enable FLL
+            fll_on();
 
-        for _ in 0..x {
-            for _ in 0..10 { // ~30 cycle delay
-                msp430::asm::nop();
+            // // Enable DCO frequency trim
+            self.periph.csctl1.modify(|_, w| unsafe{ w.dcoftrim().bits(starting_dcoftrim).dcoftrimen().set_bit()} );
+            //unsafe { self.periph.csctl1.set_bits(|w| w.dcoftrimen().set_bit()) };
+        
+            // Calculates DCO frequency trim values
+            self.configure_dcoftrim(dco_freq_hz);
+            
+            while self.periph.csctl7.read().fllunlock().is_fllunlock_1() || 
+                self.periph.csctl7.read().fllunlock().is_fllunlock_2() || 
+                self.periph.csctl7.read().dcoffg().bit_is_set() {
+                //Clear OSC fault flags
+                unsafe { self.periph.csctl7.clear_bits(|w| w.dcoffg().clear_bit()) };
+        
+                //Clear OFIFG fault flag
+                unsafe { pac::Peripherals::conjure().SFR.sfrifg1.clear_bits(|w| w.ofifg().clear_bit()) };
             }
-        }
 
-        // Reapply Oscillator Fault Interrupt Enable if needed
-        // if ofie_was_on {
-        //     unsafe{ pac::Peripherals::conjure().SFR.sfrie1.set_bits(|w| w.ofie().set_bit()) };
-        // }
+            for _ in 0..x {
+                for _ in 0..10 { // ~30 cycle delay
+                    msp430::asm::nop();
+                }
+            }
+
+            // Reapply Oscillator Fault Interrupt Enable if needed
+            // if ofie_was_on {
+            //     unsafe{ pac::Peripherals::conjure().SFR.sfrie1.set_bits(|w| w.ofie().set_bit()) };
+            // }
     }
 
     fn configure_dcoftrim(&self, dco_freq_hz: u32) {
