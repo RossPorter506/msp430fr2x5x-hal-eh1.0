@@ -26,8 +26,8 @@ pub const VLOCLK: u16 = 10000;
 enum MclkSel {
     Refoclk,
     Vloclk,
-    DcoclkFactoryTrim,
-    DcoclkSoftwareTrim(DcoclkFreqSel),
+    DcoclkFactoryTrim(DcoclkFreqSel),
+    DcoclkSoftwareTrim(u16),
 }
 
 impl MclkSel {
@@ -36,8 +36,8 @@ impl MclkSel {
         match self {
             MclkSel::Vloclk => VLOCLK as u32,
             MclkSel::Refoclk => REFOCLK as u32,
-            MclkSel::DcoclkFactoryTrim => REFOCLK as u32 * DcoclkFreqSel::_24MHz.multiplier() as u32,
-            MclkSel::DcoclkSoftwareTrim(sel) => sel.freq(),
+            MclkSel::DcoclkFactoryTrim(fsel) => REFOCLK as u32 * fsel.multiplier() as u32,
+            MclkSel::DcoclkSoftwareTrim(freq_khz) => (*freq_khz) as u32 * 1000,
         }
     }
 
@@ -46,7 +46,7 @@ impl MclkSel {
         match self {
             MclkSel::Vloclk => SELMS_A::VLOCLK,
             MclkSel::Refoclk => SELMS_A::REFOCLK,
-            MclkSel::DcoclkFactoryTrim => SELMS_A::DCOCLKDIV,
+            MclkSel::DcoclkFactoryTrim(_) => SELMS_A::DCOCLKDIV,
             MclkSel::DcoclkSoftwareTrim(_) => SELMS_A::DCOCLKDIV,
         }
     }
@@ -80,20 +80,8 @@ impl AclkSel {
 /// Actual frequencies may be slightly higher.
 #[derive(Clone, Copy)]
 pub enum DcoclkFreqSel {
-    /// 1 MHz
-    _1MHz,
-    /// 2 MHz
-    _2MHz,
-    /// 4 MHz
-    _4MHz,
-    /// 8 MHz
-    _8MHz,
-    /// 12 MHz
-    _12MHz,
     /// 16 MHz
     _16MHz,
-    /// 20 MHz
-    _20MHz,
     /// 24 MHz
     _24MHz,
 }
@@ -102,13 +90,7 @@ impl DcoclkFreqSel {
     #[inline(always)]
     fn dcorsel(self) -> DCORSEL_A {
         match self {
-            DcoclkFreqSel::_1MHz => DCORSEL_A::DCORSEL_0,
-            DcoclkFreqSel::_2MHz => DCORSEL_A::DCORSEL_1,
-            DcoclkFreqSel::_4MHz => DCORSEL_A::DCORSEL_2,
-            DcoclkFreqSel::_8MHz => DCORSEL_A::DCORSEL_3,
-            DcoclkFreqSel::_12MHz => DCORSEL_A::DCORSEL_4,
             DcoclkFreqSel::_16MHz => DCORSEL_A::DCORSEL_5,
-            DcoclkFreqSel::_20MHz => DCORSEL_A::DCORSEL_6,
             DcoclkFreqSel::_24MHz => DCORSEL_A::DCORSEL_7,
         }
     }
@@ -116,13 +98,7 @@ impl DcoclkFreqSel {
     #[inline(always)]
     fn multiplier(self) -> u16 {
         match self {
-            DcoclkFreqSel::_1MHz => 32,
-            DcoclkFreqSel::_2MHz => 61,
-            DcoclkFreqSel::_4MHz => 122,
-            DcoclkFreqSel::_8MHz => 245,
-            DcoclkFreqSel::_12MHz => 366,
             DcoclkFreqSel::_16MHz => 490,
-            DcoclkFreqSel::_20MHz => 610,
             DcoclkFreqSel::_24MHz => 732,
         }
     }
@@ -241,12 +217,12 @@ impl<MCLK, SMCLK> ClockConfig<MCLK, SMCLK> {
     #[inline]
     pub fn mclk_dcoclk_custom(
         self,
-        target_freq: DcoclkFreqSel,
+        target_freq_khz: u16,
         mclk_div: MclkDiv,
     ) -> ClockConfig<MclkDefined, SMCLK> {
         ClockConfig {
             mclk_div,
-            ..make_clkconf!(self, MclkDefined(MclkSel::DcoclkSoftwareTrim(target_freq)), self.smclk)
+            ..make_clkconf!(self, MclkDefined(MclkSel::DcoclkSoftwareTrim(target_freq_khz)), self.smclk)
         }
     }
 
@@ -255,13 +231,14 @@ impl<MCLK, SMCLK> ClockConfig<MCLK, SMCLK> {
     /// 
     /// This option is recommended provided you can obtain the MCLK speed you desire using the provided divider value.
     #[inline]
-    pub fn mclk_dcoclk_24mhz(
+    pub fn mclk_dcoclk_factory(
         self,
+        dco_freq: DcoclkFreqSel,
         mclk_div: MclkDiv,
     ) -> ClockConfig<MclkDefined, SMCLK> {
         ClockConfig {
             mclk_div,
-            ..make_clkconf!(self, MclkDefined(MclkSel::DcoclkFactoryTrim), self.smclk)
+            ..make_clkconf!(self, MclkDefined(MclkSel::DcoclkFactoryTrim(dco_freq)), self.smclk)
         }
     }
 
@@ -292,9 +269,8 @@ fn fll_on() {
 
 impl<SMCLK: SmclkState> ClockConfig<MclkDefined, SMCLK> {
     #[inline]
-    fn dco_factory_trim(&self) {
+    fn dco_factory_trim(&self, target_freq: DcoclkFreqSel) {
         // Run FLL configuration procedure from the user's guide if we are using DCO
-        let target_freq = DcoclkFreqSel::_24MHz;
         fll_off();
         msp430::asm::nop();
         msp430::asm::nop();
@@ -331,8 +307,8 @@ impl<SMCLK: SmclkState> ClockConfig<MclkDefined, SMCLK> {
         }
     }
 
-    fn dco_software_trim(&self, dco_freq_sel: DcoclkFreqSel) {
-        let dco_freq_hz = dco_freq_sel.freq().clamp(REFOCLK as u32, 24_000_000);
+    fn dco_software_trim(&self, dco_freq_khz: u16) {
+            let dco_freq_hz = (dco_freq_khz as u32 * 1000).clamp(REFOCLK as u32, 24_000_000);
 
         // Calulate ratio assuming using REFOCLK
         self.periph.csctl3.modify(|_, w| w.selref().refoclk());
@@ -353,7 +329,7 @@ impl<SMCLK: SmclkState> ClockConfig<MclkDefined, SMCLK> {
         self.periph.csctl0.write(|w| unsafe { w.bits(0) });
 
         // Set FLLD, FLLN
-        unsafe { self.periph.csctl2.write(|w| w.flld()._1().flln().bits(dco_freq_sel.multiplier() - 1)) };
+            unsafe { self.periph.csctl2.write(|w| w.flld()._1().flln().bits(ratio - 1)) };
 
         // Set DCORSEL
         let (starting_dcoftrim, dcorsel) = match dco_freq_hz {
@@ -538,8 +514,8 @@ impl ClockConfig<MclkDefined, SmclkDefined> {
         unsafe { Self::configure_fram(fram, mclk_freq) };
         match self.mclk.0 {
             MclkSel::Refoclk | MclkSel::Vloclk => (),
-            MclkSel::DcoclkFactoryTrim => self.dco_factory_trim(),
-            MclkSel::DcoclkSoftwareTrim(fsel) => self.dco_software_trim(fsel),
+            MclkSel::DcoclkFactoryTrim(fsel) => self.dco_factory_trim(fsel),
+            MclkSel::DcoclkSoftwareTrim(freq) => self.dco_software_trim(freq),
         };
         
         self.configure_cs();
@@ -560,8 +536,8 @@ impl ClockConfig<MclkDefined, SmclkDisabled> {
         unsafe { Self::configure_fram(fram, mclk_freq) };
         match self.mclk.0 {
             MclkSel::Refoclk | MclkSel::Vloclk  => (),
-            MclkSel::DcoclkFactoryTrim          => self.dco_factory_trim(),
-            MclkSel::DcoclkSoftwareTrim(fsel)   => self.dco_software_trim(fsel),
+            MclkSel::DcoclkFactoryTrim(fsel)    => self.dco_factory_trim(fsel),
+            MclkSel::DcoclkSoftwareTrim(freq)   => self.dco_software_trim(freq),
         };
 
         self.configure_cs();
