@@ -23,7 +23,6 @@
 //! eUSCI_B1: {MISO: `P4.7`, MOSI: `P4.6`, SCLK: `P4.5`}.
 use crate::{
     clock::{Aclk, Smclk}, 
-    delay::SysDelay, 
     gpio::{Alternate1, Pin, Pin0, Pin1, Pin2, Pin3, Pin4, Pin5, Pin6, Pin7, P1, P4}, 
     hw_traits::eusci::{EusciSPI, Ucmode, Ucssel, UcxSpiCtw0},
 };
@@ -148,25 +147,18 @@ impl_spi_pin!(UsciB1SCLKPin, P4, Pin5);
 pub struct UsciB1STEPin;
 impl_spi_pin!(UsciB1STEPin, P4, Pin4);
 
-/// Typestate for an SPI bus configuration with no clock source selected
-pub struct NoClockSet;
-/// Typestate for an SPI bus configuration with a clock source selected
-pub struct ClockSet;
-
-/// Struct used to configure a SPI bus
-pub struct SpiConfig<USCI: SpiUsci, STATE> {
-    usci: USCI,
-    prescaler: u16,
-
-    // Register configs
+/// Configuration object for an eUSCI peripheral being set up for SPI mode.
+pub struct SpiConfig<USCI: SpiUsci, ROLE>{
+    usci: USCI, 
     ctlw0: UcxSpiCtw0,
-    _phantom: PhantomData<STATE>,
+    prescaler: u16,
+    _phantom: PhantomData<ROLE>,
 }
 
-impl<USCI: SpiUsci> SpiConfig<USCI, NoClockSet> {
-    /// Create a new configuration for setting up a EUSCI peripheral in SPI mode
+impl<USCI: SpiUsci> SpiConfig<USCI, RoleNotSet> {
+    /// Begin configuring an EUSCI peripheral for SPI mode.
     pub fn new(usci: USCI, mode: Mode, msb_first: bool) -> Self {
-        let ctlw0 = UcxSpiCtw0 {
+        let ctlw0 = UcxSpiCtw0{ 
             ucckph: match mode.phase {
                 Phase::CaptureOnFirstTransition => true,
                 Phase::CaptureOnSecondTransition => false,
@@ -176,59 +168,76 @@ impl<USCI: SpiUsci> SpiConfig<USCI, NoClockSet> {
                 Polarity::IdleHigh => true,
             },
             ucmsb: msb_first,
-            uc7bit: false,
-            ucmst: true,
             ucsync: true,
-            ucstem: true,
             ucswrst: true,
-            ucmode: Ucmode::FourPinSPI0, // overwritten by `configure_with_software_cs()`
-            ucssel: Ucssel::Smclk, // overwritten by `use_smclk/aclk()`
+            // UCSTEM = 1 isn't useful for us, since the STE acts like a CS pin in this case, but 
+            // it asserts and de-asserts after each byte automatically, and unfortunately 
+            // ehal::SpiBus requires support for multi-byte transactions. 
+            ucstem: false, 
+            uc7bit: false, // Not supported
+            ..Default::default()
         };
 
-        SpiConfig {
-            usci,
-            prescaler: 0,
-            ctlw0,
-            _phantom: PhantomData,
-        }
+        Self { usci, ctlw0, prescaler: 0, _phantom: PhantomData }
     }
-
-    /// Configures this peripheral to use smclk
-    #[inline]
-    pub fn use_smclk(mut self, _smclk: &Smclk, clk_divisor: u16) -> SpiConfig<USCI, ClockSet>{
+    /// This device will act as a slave on the SPI bus.
+    pub fn as_slave(mut self) -> SpiConfig<USCI, Slave> {
+        self.ctlw0.ucmst = false;
+        // UCSSEL is 'don't care' in slave mode
+        SpiConfig {usci: self.usci, ctlw0: self.ctlw0, prescaler: self.prescaler, _phantom: PhantomData}
+    }
+    /// This device will act as a master on the SPI bus, deriving SCLK from SMCLK.
+    pub fn as_master_using_smclk(mut self, _smclk: &Smclk, clk_div: u16) -> SpiConfig<USCI, Master> {
+        self.ctlw0.ucmst = true;
         self.ctlw0.ucssel = Ucssel::Smclk;
-        self.prescaler = clk_divisor;
-        SpiConfig { usci: self.usci, prescaler: self.prescaler, ctlw0: self.ctlw0, _phantom: PhantomData }
+        self.prescaler = clk_div;
+        SpiConfig {usci: self.usci, ctlw0: self.ctlw0, prescaler: self.prescaler, _phantom: PhantomData}
     }
-
-    /// Configures this peripheral to use aclk
-    #[inline]
-    pub fn use_aclk(mut self, _aclk: &Aclk, clk_divisor: u16) -> SpiConfig<USCI, ClockSet> {
+    /// This device will act as a master on the SPI bus, deriving SCLK from ACLK.
+    pub fn as_master_using_aclk(mut self, _aclk: &Aclk, clk_div: u16) -> SpiConfig<USCI, Master> {
+        self.ctlw0.ucmst = true;
         self.ctlw0.ucssel = Ucssel::Aclk;
-        self.prescaler = clk_divisor;
-        SpiConfig { usci: self.usci, prescaler: self.prescaler, ctlw0: self.ctlw0, _phantom: PhantomData }
+        self.prescaler = clk_div;
+        SpiConfig {usci: self.usci, ctlw0: self.ctlw0, prescaler: self.prescaler, _phantom: PhantomData}
     }
 }
-#[allow(private_bounds)]
-impl<USCI: SpiUsci> SpiConfig<USCI, ClockSet> {
-    /// Performs hardware configuration and creates an [SPI *bus*](embedded_hal::spi::SpiBus).
-    /// You must configure and control any chip select pins yourself. 
-    #[inline(always)]
-    pub fn configure<
-        SO: Into<USCI::MISO>,
-        SI: Into<USCI::MOSI>,
-        CLK: Into<USCI::SCLK>,
-    >(
-        &mut self,
-        _miso: SO,
-        _mosi: SI,
-        _sclk: CLK
-    ) -> Spi<USCI> {
+impl<USCI: SpiUsci> SpiConfig<USCI, Master> {
+    /// For an SPI bus with more than one master. 
+    /// The STE pin is used by the other master to turn SCLK and MOSI high impedance, so the other master can talk on the bus.
+    pub fn multi_master_bus<MOSI, MISO, SCLK, STE>(mut self, _miso: MISO, _mosi: MOSI, _sclk: SCLK, _ste: STE, ste_pol: StePolarity) -> Spi<USCI> 
+    where MOSI: Into<USCI::MOSI>, MISO: Into<USCI::MISO>, SCLK: Into<USCI::SCLK>, STE: Into<USCI::STE> {
+        self.ctlw0.ucmode = ste_pol.into();
+        self.configure_hw();
+        Spi(PhantomData)
+    }
+    /// For an SPI bus with a single master. 
+    /// SCLK and MOSI are always outputs. The STE pin is not required.
+    pub fn single_master_bus<MOSI, MISO, SCLK>(mut self, _miso: MISO, _mosi: MOSI, _sclk: SCLK) -> Spi<USCI>
+    where MOSI: Into<USCI::MOSI>, MISO: Into<USCI::MISO>, SCLK: Into<USCI::SCLK> {
         self.ctlw0.ucmode = Ucmode::ThreePinSPI;
         self.configure_hw();
         Spi(PhantomData)
     }
-
+}
+impl<USCI: SpiUsci> SpiConfig<USCI, Slave> {
+    /// For an SPI bus with more than one slave. 
+    /// The STE pin is used to turn MISO high impedance, so other slaves can talk on the bus.
+    pub fn shared_bus<MOSI, MISO, SCLK, STE>(mut self, _miso: MISO, _mosi: MOSI, _sclk: SCLK, _ste: STE, ste_pol: StePolarity) -> SpiSlave<USCI> 
+    where MOSI: Into<USCI::MOSI>, MISO: Into<USCI::MISO>, SCLK: Into<USCI::SCLK>, STE: Into<USCI::STE> {
+        self.ctlw0.ucmode = ste_pol.into();
+        self.configure_hw();
+        SpiSlave(self.usci)
+    }
+    /// For an SPI bus where this device is the only slave.
+    /// MOSI is always an output. 
+    pub fn exclusive_bus<MOSI, MISO, SCLK>(mut self, _miso: MISO, _mosi: MOSI, _sclk: SCLK) -> SpiSlave<USCI> 
+    where MOSI: Into<USCI::MOSI>, MISO: Into<USCI::MISO>, SCLK: Into<USCI::SCLK> {
+        self.ctlw0.ucmode = Ucmode::ThreePinSPI;
+        self.configure_hw();
+        SpiSlave(self.usci)
+    }
+}
+impl<USCI: SpiUsci, ROLE> SpiConfig<USCI, ROLE> {
     #[inline]
     fn configure_hw(&self) {
         self.usci.ctw0_set_rst();
@@ -242,6 +251,122 @@ impl<USCI: SpiUsci> SpiConfig<USCI, ClockSet> {
         self.usci.clear_transmit_interrupt();
         self.usci.clear_receive_interrupt();
     }
+}
+
+/// Typestate for an SPI bus whose role has not yet been chosen.
+pub struct RoleNotSet;
+/// Typestate for an SPI bus being configured as a master device.
+pub struct Master;
+/// Typestate for an SPI bus being configured as a slave device.
+pub struct Slave;
+
+/// The polarity of the STE pin.
+pub enum StePolarity {
+    /// This device is enabled when STE is high.
+    EnabledWhenHigh = 0b01,
+    /// This device is enabled when STE is low.
+    EnabledWhenLow = 0b10,
+}
+impl From<StePolarity> for Ucmode {
+    fn from(value: StePolarity) -> Self {
+        match value {
+            StePolarity::EnabledWhenHigh => Ucmode::FourPinSPI1,
+            StePolarity::EnabledWhenLow  => Ucmode::FourPinSPI0,
+        }
+    }
+}
+
+/// An eUSCI peripheral that has been configured into an SPI slave.
+pub struct SpiSlave<USCI: SpiUsci>(USCI);
+impl<USCI: SpiUsci> SpiSlave<USCI> {
+    /// Enable Rx interrupts, which fire when a byte is ready to be read
+    #[inline(always)]
+    pub fn set_rx_interrupt(&mut self) {
+        self.0.set_receive_interrupt();
+    }
+
+    /// Disable Rx interrupts, which fire when a byte is ready to be read
+    #[inline(always)]
+    pub fn clear_rx_interrupt(&mut self) {
+        self.0.clear_receive_interrupt();
+    }
+
+    /// Enable Tx interrupts, which fire when the transmit buffer is empty
+    #[inline(always)]
+    pub fn set_tx_interrupt(&mut self) {
+        self.0.set_transmit_interrupt();
+    }
+
+    /// Disable Tx interrupts, which fire when the transmit buffer is empty
+    #[inline(always)]
+    pub fn clear_tx_interrupt(&mut self) {
+        self.0.clear_transmit_interrupt();
+    }
+
+    /// Read the byte in the Rx buffer, waiting if necessary.
+    #[inline]
+    pub fn read(&mut self) -> Result<u8, SpiReadErr> {
+        while !self.0.receive_flag() {
+            msp430::asm::nop();
+        }
+        if self.0.overrun_flag() {
+            return Err(SpiReadErr::Overrun(self.0.rxbuf_rd()));
+        }
+        Ok(self.0.rxbuf_rd())
+    }
+
+    /// Read the byte in the Rx buffer, without checking if the Rx buffer is ready.
+    /// Useful when you already know the buffer is ready (e.g. an Rx interrupt was triggered).
+    /// # Safety
+    /// May read invalid data if RXIFG bit is not ready.
+    #[inline]
+    pub unsafe fn read_unchecked(&mut self) -> Result<u8, SpiReadErr> {
+        if self.0.overrun_flag() {
+            return Err(SpiReadErr::Overrun(self.0.rxbuf_rd()));
+        }
+        Ok(self.0.rxbuf_rd())
+    }
+
+    /// Write a byte into the Tx buffer, waiting if necessary. Returns immediately.
+    #[inline]
+    pub fn write(&mut self, byte: u8) {
+        while !self.0.transmit_flag() {
+            msp430::asm::nop();
+        }
+        self.0.txbuf_wr(byte);
+    }
+
+    /// Write a byte into the Tx buffer, without checking if the Tx buffer is empty. Returns immediately.
+    /// Useful if you already know the buffer is empty (e.g. a Tx interrupt was triggered)
+    /// # Safety
+    /// May clobber previous unsent data if the TXIFG bit is not set.
+    #[inline(always)]
+    pub unsafe fn write_unchecked(&mut self, byte: u8) {
+        self.0.txbuf_wr(byte);
+    }
+
+    /// Get the source of the interrupt currently being serviced.
+    #[inline]
+    pub fn interrupt_source(&mut self) -> SpiVector {
+        let iv: u16 = self.0.iv_rd();
+        match iv {
+            0 => SpiVector::None,
+            2 => SpiVector::RxBufferFull,
+            4 => SpiVector::TxBufferEmpty, 
+            _ => unsafe { core::hint::unreachable_unchecked() }, 
+        }
+    }
+}
+
+/// Possible sources for an eUSCI SPI interrupt
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SpiVector {
+    /// No interrupt is currently being serviced.
+    None = 0,
+    /// The interrupt was caused by the Rx buffer being full.
+    RxBufferFull = 2,
+    /// The interrupt was caused by the Tx buffer being empty.
+    TxBufferEmpty = 4,
 }
 
 /// Represents a group of pins configured for SPI communication
@@ -308,7 +433,7 @@ impl<USCI: SpiUsci> Spi<USCI> {
         
         if usci.receive_flag() {
             if usci.overrun_flag() {
-                Err(nb::Error::Other(SpiErr::OverrunError(usci.rxbuf_rd())))
+                Err(nb::Error::Other(SpiErr::Overrun(usci.rxbuf_rd())))
             }
             else {
                 Ok(usci.rxbuf_rd())
@@ -321,6 +446,9 @@ impl<USCI: SpiUsci> Spi<USCI> {
     fn send_byte(&mut self, word: u8) -> nb::Result<(), SpiErr> {
         let usci = unsafe { USCI::steal() };
         if usci.transmit_flag() {
+            if usci.framing_flag() {
+                return Err(nb::Error::Other(SpiErr::BusConflict));
+            }
             usci.txbuf_wr(word);
             Ok(())
         } else {
@@ -329,13 +457,30 @@ impl<USCI: SpiUsci> Spi<USCI> {
     }
 }
 
+// Embedded-hal requires the error type to be the same between the send and recieve fns...
 /// SPI transmit/receive errors
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub enum SpiErr {
     /// Data in the recieve buffer was overwritten before it was read. The contained data is the new contents of the recieve buffer.
-    OverrunError(u8),
-    // In future the framing error bit UCFE may appear here. Right now it's unimplemented.
+    Overrun(u8),
+    /// Another master interrupted our previous transaction using the STE pin. Only occurs in 4-pin master mode.
+    BusConflict,
+}
+
+// ...But for the SpiSlave we can separate them to make error handling easier.
+/// SPI receive errors
+#[derive(Clone, Copy, Debug)]
+pub enum SpiReadErr {
+    /// Data in the recieve buffer was overwritten before it was read. The contained data is the new contents of the recieve buffer.
+    Overrun(u8),
+}
+impl From<SpiReadErr> for SpiErr {
+    fn from(err: SpiReadErr) -> Self {
+        match err {
+            SpiReadErr::Overrun(byte) => SpiErr::Overrun(byte),
+        }
+    }
 }
 
 mod ehal1 {
@@ -346,7 +491,8 @@ mod ehal1 {
     impl Error for SpiErr {
         fn kind(&self) -> embedded_hal::spi::ErrorKind {
             match self {
-                SpiErr::OverrunError(_) => embedded_hal::spi::ErrorKind::Overrun,
+                SpiErr::Overrun(_) => embedded_hal::spi::ErrorKind::Overrun,
+                SpiErr::BusConflict => embedded_hal::spi::ErrorKind::ModeFault,
             }
         }
     }
@@ -357,6 +503,10 @@ mod ehal1 {
 
     impl<USCI: SpiUsci> SpiBus for Spi<USCI> {
         /// Send dummy packets (`0x00`) on MOSI so the slave can respond on MISO. Store the response in `words`.
+        /// 
+        /// ## Errors
+        /// - Returns `SpiErr::OverrunError` if there was already a byte in the Rx buffer that was not read.
+        /// - Returns `SpiErr::BusConflict` if another master interrupted our transmission. Only occurs on a multi-master bus.
         fn read(&mut self, words: &mut [u8]) -> Result<(), Self::Error> {
             for word in words {
                 block!(self.send_byte(0x00))?;
@@ -367,7 +517,8 @@ mod ehal1 {
     
         /// Write `words` to the slave, ignoring all the incoming words.
         ///
-        /// Returns as soon as the last word is placed in the hardware buffer.
+        /// ## Errors
+        /// - Returns `SpiErr::BusConflict` if another master interrupted our transmission. Only occurs on a multi-master bus.
         fn write(&mut self, words: &[u8]) -> Result<(), Self::Error> {
             for word in words {
                 block!(self.send_byte(*word))?;
@@ -381,6 +532,9 @@ mod ehal1 {
         ///
         /// If `write` is longer than `read`, then after `read` is full any subsequent incoming words will be discarded. 
         /// If `read` is longer than `write`, then dummy packets of `0x00` are sent until `read` is full.
+        /// ## Errors
+        /// - Returns `SpiErr::OverrunError` if there was already a byte in the Rx buffer that was not read.
+        /// - Returns `SpiErr::BusConflict` if another master interrupted our transmission. Only occurs on a multi-master bus.
         fn transfer(&mut self, read: &mut [u8], write: &[u8]) -> Result<(), Self::Error> {
             let mut read_bytes = read.iter_mut();
             let mut write_bytes = write.iter();
@@ -405,6 +559,9 @@ mod ehal1 {
         /// Write and read simultaneously. The contents of `words` are
         /// written to the slave, and the received words are stored into the same
         /// `words` buffer, overwriting it.
+        /// ## Errors
+        /// - Returns `SpiErr::OverrunError` if there was already a byte in the Rx buffer that was not read.
+        /// - Returns `SpiErr::BusConflict` if another master interrupted our transmission. Only occurs on a multi-master bus.
         fn transfer_in_place(&mut self, words: &mut [u8]) -> Result<(), Self::Error> {
             for word in words {
                 block!(self.send_byte(*word))?;
@@ -413,11 +570,16 @@ mod ehal1 {
             Ok(())
         }
     
+        /// ## Errors
+        /// - Returns `SpiErr::BusConflict` if another master interrupted a transmission. Only occurs on a multi-master bus.
         fn flush(&mut self) -> Result<(), Self::Error> {
             // I would usually do this by checking the UCBUSY bit, but 
             // it seems to be missing from the (SPI version of the) PAC...
             let usci = unsafe { USCI::steal() };
-            while !usci.transmit_flag() {}
+            while usci.is_busy() {}
+            if usci.framing_flag() {
+                return Err(SpiErr::BusConflict);
+            }
             Ok(())
         }
     }

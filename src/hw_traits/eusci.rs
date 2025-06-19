@@ -24,7 +24,7 @@ macro_rules! reg_struct {
         }
     ) => {
         $(#[$attr:meta])*
-        #[derive(Copy, Clone)]
+        #[derive(Copy, Clone, Default)]
         pub struct $struct_name {
             $($(pub $bool_name : bool, $(#[$f_attr])*)*)?
             $($(pub $val_name : $val_type , $(#[$e_attr])*)*)?
@@ -42,23 +42,26 @@ macro_rules! reg_struct {
     };
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub enum Ucssel {
     Uclk = 0,
     Aclk = 1,
+    #[default]
     Smclk = 2,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub enum Ucmode {
+    #[default]
     ThreePinSPI = 0,
     FourPinSPI1 = 1,
     FourPinSPI0 = 2,
     I2CMode = 3,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub enum Ucglit {
+    #[default]
     Max50ns = 0,
     Max25ns = 1,
     Max12_5ns = 2,
@@ -66,9 +69,10 @@ pub enum Ucglit {
 }
 
 /// Clock low timeout select
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub enum Ucclto {
     /// Disable clock low time-out counter
+    #[default]
     Ucclto00b = 0,
     /// 135000 MODCLK cycles (approximately 28 ms)
     Ucclto01b = 1,
@@ -80,10 +84,11 @@ pub enum Ucclto {
 
 /// Automatic STOP condition generation. In slave mode, only settings 00b and 01b
 /// are available.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub enum Ucastp {
     /// No automatic STOP generation. The STOP condition is generated after
     /// the user sets the UCTXSTP bit. The value in UCBxTBCNT is a don't care.
+    #[default]
     Ucastp00b = 0,
     /// UCBCNTIFG is set when the byte counter reaches the threshold defined in
     /// UCBxTBCNT
@@ -340,7 +345,11 @@ pub trait EusciSPI: Steal {
 
     fn overrun_flag(&self) -> bool;
 
+    fn framing_flag(&self) -> bool;
+
     fn iv_rd(&self) -> u16;
+
+    fn is_busy(&self) -> bool;
 }
 
 pub trait UartUcxStatw {
@@ -355,7 +364,7 @@ pub trait SpiStatw {
     fn uclisten(&self) -> bool;
     fn ucfe(&self) -> bool;
     fn ucoe(&self) -> bool;
-    // fn ucbusy1(&self) -> bool;
+    fn ucbusy(&self) -> bool;
 }
 
 pub trait I2CUcbIfgOut {
@@ -480,8 +489,17 @@ macro_rules! eusci_impl {
             }
 
             #[inline(always)]
+            fn framing_flag(&self) -> bool {
+                self.$ucxstatw().read().ucfe().bit()
+            }
+
+            #[inline(always)]
             fn iv_rd(&self) -> u16 {
                 self.$ucxiv().read().uciv().bits()
+            }
+
+            fn is_busy(&self) -> bool {
+                self.$ucxstatw().read().ucbusy()
             }
         }
 
@@ -501,10 +519,13 @@ macro_rules! eusci_impl {
                 self.ucoe().bit()
             }
 
-            // #[inline(always)]
-            // fn ucbusy1(&self) -> bool{
-            //     self.ucbusy().bit()
-            // }
+            #[inline(always)]
+            fn ucbusy(&self) -> bool{
+                // TODO: Update the PAC 
+                // The PAC is currently missing the UCBUSY bit in the SPI version of this register
+                const UCBUSY_MASK: u16 = (1<<0);
+                (self.bits() & UCBUSY_MASK) > 0
+            }
         }
     };
 }
