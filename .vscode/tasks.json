@@ -1,0 +1,61 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build example",
+            "type": "shell",
+            "command": "cargo build --example ${fileBasenameNoExtension}",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "Flash example",
+            "type": "shell",
+            "command": "cargo run --example ${fileBasenameNoExtension}",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            }
+        },
+        // {
+        //     "label": "Start Debug Server",
+        //     "type": "shell",
+        //     "command": "/bin/sh -c 'pkill mspdebug && mspdebug tilib gdb &'",
+        //     "group": {
+        //         "kind": "test",
+        //         "isDefault": false
+        //     }
+        // }
+        {
+            "label": "Start mspdebug",
+            "type": "shell",
+            "command": "mspdebug tilib gdb -C mspdebug.cfg",
+            "isBackground": true,
+            "problemMatcher": {
+                "pattern": [
+                    {
+                    "regexp": ".",
+                    "file": 1,
+                    "location": 2,
+                    "message": 3
+                    }
+                ],
+                "background": {
+                    "activeOnStart": false,
+                    "beginsPattern": ".",
+                    "endsPattern": ".",
+                }
+            },
+        },
+    ]
+}
