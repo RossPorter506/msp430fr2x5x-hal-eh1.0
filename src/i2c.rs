@@ -25,6 +25,7 @@ use crate::{
     },
     pac,
 };
+
 use core::marker::PhantomData;
 use embedded_hal::i2c::{AddressMode, SevenBitAddress, TenBitAddress};
 use msp430::asm;
@@ -374,6 +375,11 @@ pub enum I2CErr {
     /// Address was never acknolwedged by slave
     GotNACK,
     // Other errors such as 'arbitration lost' and the 'clock low timeout' UCCLTOIFG may appear here in future.
+    /// Another master on the bus talked over us, so the transaction was aborted.
+    ArbitrationLost,
+    /// Another master on the bus addressed us as a slave device. 
+    /// This must be handled before attempting to start a new transaction as a master.
+    AddressedAsSlave,
 }
 
 impl<USCI: I2cUsci> I2cBus<USCI> {
@@ -460,25 +466,36 @@ impl<USCI: I2cUsci> I2cBus<USCI> {
             usci.transmit_start();
         }
 
-        while !usci.ifg_rd().uctxifg0() {
-            asm::nop();
-        }
+        // while !usci.ifg_rd().uctxifg0() {
+        //     asm::nop();
+        // }
 
         for &byte in bytes {
-            usci.uctxbuf_wr(byte);
             loop {
-                if usci.ifg_rd().ucnackifg() {
+                let ifg = usci.ifg_rd();
+                if ifg.ucnackifg() {
                     usci.transmit_stop();
                     while usci.uctxstp_rd() {
                         asm::nop();
                     }
                     return Err(I2CErr::GotNACK);
                 }
-                if usci.ifg_rd().uctxifg0() {
+                if ifg.ucalifg() {
+                    return match ifg.ucsttifg() {
+                        true  => Err(I2CErr::AddressedAsSlave),// Lost arbitration and the slave address was us
+                        false => Err(I2CErr::ArbitrationLost), // Lost arbitration
+                    }
+                }
+                if ifg.uctxifg0() {
                     break;
                 }
             }
+            usci.uctxbuf_wr(byte);
         } 
+
+        while !usci.ifg_rd().uctxifg0() {
+            asm::nop();
+        }
 
         if send_stop {
             usci.transmit_stop();
@@ -493,19 +510,58 @@ impl<USCI: I2cUsci> I2cBus<USCI> {
         Ok(())
     }
 
+    /// Get the current status of the I2C bus
+    pub fn get_bus_status(&mut self) -> BusStatus {
+        if !self.usci.is_bus_busy() {
+            return BusStatus::Idle;
+        }
+        // If we are still a master then no-one has addressed us as a slave.
+        if self.usci.is_master() {
+            return BusStatus::Busy;
+        }
+        if self.usci.is_transmitter() {
+            return BusStatus::SlaveRead;
+        }
+        BusStatus::SlaveWrite
+    }
+
+    /// Get the event that triggered the current interrupt
+    pub fn interrupt_source(&mut self) -> I2cVector {
+        use I2cVector::*;
+        match self.usci.iv_rd() {
+            0x00 => None,
+            0x02 => ArbitrationLost,
+            0x04 => NackReceived,
+            0x06 => StartReceived,
+            0x08 => StopReceived,
+            0x0A => Slave3DataReceived,
+            0x0C => Slave3TxBufEmpty,
+            0x0E => Slave2DataReceived,
+            0x10 => Slave2TxBufEmpty,
+            0x12 => Slave1DataReceived,
+            0x14 => Slave1TxBufEmpty,
+            0x16 => DataReceived,
+            0x18 => TxBufEmpty,
+            0x1A => ByteCounterZero,
+            0x1C => ClockLowTimeout,
+            0x1E => NinthBitReceived,
+            _ => unsafe{ core::hint::unreachable_unchecked() }
+        }
+    }
+
     /// Checks whether a slave with the specified address is present on the I2C bus.
     /// Sends a zero-byte write and records whether the slave sends an ACK or not.
     /// 
     /// A u8 address will use the 7-bit addressing mode, a u16 address uses 10-bit addressing.
     // If we add more I2C error variants this fn should be changed to return a Result<bool, I2cErr>
-    pub fn is_slave_present<TenOrSevenBit>(&mut self, address: TenOrSevenBit) -> bool 
+    pub fn is_slave_present<TenOrSevenBit>(&mut self, address: TenOrSevenBit) -> Result<bool, I2CErr> 
     where TenOrSevenBit: AddressType {
         self.set_addressing_mode(TenOrSevenBit::addr_type());
         self.set_transmission_mode(TransmissionMode::Transmit);
         match self.write(address.into(), &[], true, true) {
-            Ok(_) => true,
-            Err(I2CErr::GotNACK) => false,
-            //Err(e) => Err(e),
+            Ok(_) => Ok(true),
+            Err(I2CErr::GotNACK) => Ok(false),
+            Err(e) => Err(e),
         }
     }
 
@@ -516,6 +572,55 @@ impl<USCI: I2cUsci> I2cBus<USCI> {
         self.set_transmission_mode(TransmissionMode::Receive);
         self.read(address, buffer, true, true)
     }
+}
+
+/// List of possible I2C interrupt sources
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum I2cVector {
+    /// No interrupt.
+    None                = 0x00,
+    /// Arbitration was lost during an attempted transmission.
+    ArbitrationLost     = 0x02,
+    /// Received a NACK.
+    NackReceived        = 0x04,
+    /// Received a Start condition on the I2C bus along with one of our own addresses.
+    StartReceived       = 0x06,
+    /// Received a Stop condition on the I2C bus. This is usually set when acting as an I2C slave, but that this can occur as an I2C master during a zero byte write.
+    StopReceived        = 0x08,
+    /// Slave address 3 received a data byte.
+    Slave3DataReceived  = 0x0A,
+    /// The Tx buffer is empty and slave address 3 was on the I2C bus when this occurred.
+    Slave3TxBufEmpty    = 0x0C,
+    /// Slave address 2 received a data byte.
+    Slave2DataReceived  = 0x0E,
+    /// The Tx buffer is empty and slave address 2 was on the I2C bus when this occurred.
+    Slave2TxBufEmpty    = 0x10,
+    /// Slave address 1 received a data byte.
+    Slave1DataReceived  = 0x12,
+    /// The Tx buffer is empty and slave address 1 was on the I2C bus when this occurred.
+    Slave1TxBufEmpty    = 0x14,
+    /// Data is waiting in the Rx buffer. In slave mode slave address 0 was on the I2C bus when this occurred.
+    DataReceived        = 0x16,
+    /// The Tx buffer is empty. In slave mode slave address 0 was on the I2C bus when this occurred.
+    TxBufEmpty          = 0x18,
+    /// The target byte count has been reached.
+    ByteCounterZero     = 0x1A,
+    /// The SCL line has been held low longer than the Clock Low Timeout value.
+    ClockLowTimeout     = 0x1C,
+    /// The 9th bit of an I2C data packet has been completed.
+    NinthBitReceived    = 0x1E,
+}
+
+/// The current status of the I2C bus
+pub enum BusStatus {
+    /// The I2C bus is currently idle
+    Idle,
+    /// The I2C bus is busy, i.e. another master is transmitting to another slave (not us).
+    Busy,
+    /// Another master has addressed us as a slave and wants to read from us.
+    SlaveRead,
+    /// Another master has addressed us as a slave and wants to write to us.
+    SlaveWrite,
 }
 
 // Trait to link embedded-hal types to our addressing mode enum.
@@ -545,7 +650,9 @@ mod ehal1 {
     impl Error for I2CErr {
         fn kind(&self) -> ErrorKind {
             match self {
-                I2CErr::GotNACK => ErrorKind::NoAcknowledge(NoAcknowledgeSource::Unknown),
+                I2CErr::GotNACK          => ErrorKind::NoAcknowledge(NoAcknowledgeSource::Unknown),
+                I2CErr::ArbitrationLost  => ErrorKind::ArbitrationLoss,
+                I2CErr::AddressedAsSlave => ErrorKind::Other,
             }
         }
     }
