@@ -24,7 +24,7 @@ macro_rules! reg_struct {
         }
     ) => {
         $(#[$attr:meta])*
-        #[derive(Copy, Clone)]
+        #[derive(Copy, Clone, Default)]
         pub struct $struct_name {
             $($(pub $bool_name : bool, $(#[$f_attr])*)*)?
             $($(pub $val_name : $val_type , $(#[$e_attr])*)*)?
@@ -42,33 +42,42 @@ macro_rules! reg_struct {
     };
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub enum Ucssel {
     Uclk = 0,
     Aclk = 1,
+    #[default]
     Smclk = 2,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub enum Ucmode {
+    #[default]
     ThreePinSPI = 0,
     FourPinSPI1 = 1,
     FourPinSPI0 = 2,
     I2CMode = 3,
 }
 
-#[derive(Copy, Clone)]
+/// Configure the automatic glitch filter on the SDA and SCL lines
+#[derive(Copy, Clone, Default)]
 pub enum Ucglit {
+    /// Pulses of maximum 50-ns length are filtered.
+    #[default]
     Max50ns = 0,
+    /// Pulses of maximum 25-ns length are filtered.
     Max25ns = 1,
+    /// Pulses of maximum 12.5-ns length are filtered.
     Max12_5ns = 2,
+    /// Pulses of maximum 6.25-ns length are filtered.
     Max6_25ns = 3,
 }
 
 /// Clock low timeout select
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub enum Ucclto {
     /// Disable clock low time-out counter
+    #[default]
     Ucclto00b = 0,
     /// 135000 MODCLK cycles (approximately 28 ms)
     Ucclto01b = 1,
@@ -80,10 +89,11 @@ pub enum Ucclto {
 
 /// Automatic STOP condition generation. In slave mode, only settings 00b and 01b
 /// are available.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub enum Ucastp {
     /// No automatic STOP generation. The STOP condition is generated after
     /// the user sets the UCTXSTP bit. The value in UCBxTBCNT is a don't care.
+    #[default]
     Ucastp00b = 0,
     /// UCBCNTIFG is set when the byte counter reaches the threshold defined in
     /// UCBxTBCNT
@@ -142,6 +152,7 @@ pub struct UcbCtlw1, UcbCtlw1_rd, UcbCtlw1_wr {
 }
 
 // in order to avoid 4 separate structs, I manually implemented the macro for these registers
+#[derive(Debug, Default)]
 pub struct UcbI2coa {
     pub ucgcen: bool,
     pub ucoaen: bool,
@@ -254,8 +265,14 @@ pub trait EUsciI2C: Steal {
     fn uctxstt_rd(&self) -> bool;
     fn uctxstp_rd(&self) -> bool;
 
+    fn start_received(&self) -> bool;
+    fn stop_received(&self) -> bool;
+    fn clear_start_flag(&self);
+    fn clear_start_stop_flags(&self);
+
     fn set_ucsla10(&self, bit: bool);
     fn set_uctr(&self, bit: bool);
+    fn set_master(&self);
 
     fn txifg0_rd(&self) -> bool;
     fn rxifg0_rd(&self) -> bool;
@@ -281,6 +298,8 @@ pub trait EUsciI2C: Steal {
     fn brw_rd(&self) -> u16;
     fn brw_wr(&self, val: u16);
 
+    fn byte_count(&self) -> u8; 
+
     // Modify only when UCSWRST = 1
     fn tbcnt_rd(&self) -> u16;
     fn tbcnt_wr(&self, val: u16);
@@ -303,6 +322,8 @@ pub trait EUsciI2C: Steal {
     fn i2csa_wr(&self, val: u16);
 
     fn ie_wr(&self, reg: &UcbIe);
+    fn ie_set(&self, mask: u16);
+    fn ie_clr(&self, mask: u16);
 
     fn ifg_rd(&self) -> Self::IfgOut;
     fn ifg_wr(&self, reg: &UcbIFG);
@@ -739,6 +760,31 @@ macro_rules! eusci_b_impl {
             }
 
             #[inline(always)]
+            fn start_received(&self) -> bool {
+                self.$ucbxifg().read().ucsttifg().bit()
+            }
+
+            #[inline(always)]
+            fn stop_received(&self) -> bool {
+                self.$ucbxifg().read().ucstpifg().bit()
+            }
+
+            #[inline(always)]
+            fn clear_start_flag(&self) {
+                unsafe{ self.$ucbxifg().clear_bits(|w| w.ucstpifg().clear_bit()) }
+            }
+
+            #[inline(always)]
+            fn clear_start_stop_flags(&self) {
+                unsafe{ self.$ucbxifg().clear_bits(|w| w.ucstpifg().clear_bit().ucsttifg().clear_bit()) }
+            }
+
+            #[inline(always)]
+            fn set_master(&self) {
+                unsafe { self.$ucbxctlw0().set_bits(|w| w.ucmst().set_bit()) }
+            }
+
+            #[inline(always)]
             fn set_ucsla10(&self, bit: bool) {
                 match bit {
                     true => unsafe { self.$ucbxctlw0().set_bits(|w| w.ucsla10().set_bit()) },
@@ -779,6 +825,7 @@ macro_rules! eusci_b_impl {
                 self.$ucbxstatw().read().ucbbusy().bit_is_set()
             }
 
+            #[inline(always)]
             fn is_transmitter(&self) -> bool {
                 self.$ucbxctlw0().read().uctr().bit_is_set()
             }
@@ -795,6 +842,11 @@ macro_rules! eusci_b_impl {
             #[inline(always)]
             fn brw_wr(&self, val: u16) {
                 self.$ucbxbrw().write(|w| unsafe { w.bits(val) });
+            }
+
+            #[inline(always)]
+            fn byte_count(&self) -> u8 {
+                self.$ucbxstatw().read().ucbcnt().bits()
             }
 
             #[inline(always)]
@@ -908,6 +960,15 @@ macro_rules! eusci_b_impl {
             #[inline(always)]
             fn ie_wr(&self, reg: &UcbIe) {
                 self.$ucbxie().write(UcbIe_wr! {reg});
+            }
+
+            #[inline(always)]
+            fn ie_set(&self, mask: u16) {
+                unsafe{ self.$ucbxie().set_bits(|w| w.bits(mask)) };
+            }
+            #[inline(always)]
+            fn ie_clr(&self, mask: u16) {
+                unsafe{ self.$ucbxie().clear_bits(|w| w.bits(mask)) };
             }
 
             #[inline(always)]
