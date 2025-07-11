@@ -160,50 +160,6 @@ pub struct UcbI2coa {
 }
 
 reg_struct! {
-pub struct UcbIe, UcbIe_rd, UcbIe_wr {
-    flags{
-        pub ucbit9ie: bool,
-        pub uctxie3: bool,
-        pub ucrxie3: bool,
-        pub uctxie2: bool,
-        pub ucrxie2: bool,
-        pub uctxie1: bool,
-        pub ucrxie1: bool,
-        pub uccltoie: bool,
-        pub ucbcntie: bool,
-        pub ucnackie: bool,
-        pub ucalie: bool,
-        pub ucstpie: bool,
-        pub ucsttie: bool,
-        pub uctxie0: bool,
-        pub ucrxie0: bool,
-    }
-}
-}
-
-reg_struct! {
-pub struct UcbIFG, UcbIFG_rd, UcbIFG_wr{
-    flags{
-        pub ucbit9ifg: bool,
-        pub uctxifg3: bool,
-        pub ucrxifg3: bool,
-        pub uctxifg2: bool,
-        pub ucrxifg2: bool,
-        pub uctxifg1: bool,
-        pub ucrxifg1: bool,
-        pub uccltoifg: bool,
-        pub ucbcntifg: bool,
-        pub ucnackifg: bool,
-        pub ucalifg: bool,
-        pub ucstpifg: bool,
-        pub ucsttifg: bool,
-        pub uctxifg0: bool,
-        pub ucrxifg0: bool,
-    }
-}
-}
-
-reg_struct! {
 pub struct UcxSpiCtw0, UcxSpiCtw0_rd, UcxSpiCtw0_wr{
     flags{
         pub ucckph: bool,
@@ -321,12 +277,12 @@ pub trait EUsciI2C: Steal {
     fn i2csa_rd(&self) -> u16;
     fn i2csa_wr(&self, val: u16);
 
-    fn ie_wr(&self, reg: &UcbIe);
+    fn ie_wr(&self, reg: u16);
     fn ie_set(&self, mask: u16);
     fn ie_clr(&self, mask: u16);
 
     fn ifg_rd(&self) -> Self::IfgOut;
-    fn ifg_wr(&self, reg: &UcbIFG);
+    fn ifg_wr(&self, reg: u16);
     fn ifg_rst(&self);
 
     fn iv_rd(&self) -> u16;
@@ -958,8 +914,8 @@ macro_rules! eusci_b_impl {
             }
 
             #[inline(always)]
-            fn ie_wr(&self, reg: &UcbIe) {
-                self.$ucbxie().write(UcbIe_wr! {reg});
+            fn ie_wr(&self, reg: u16) {
+                self.$ucbxie().write(|w| unsafe{w.bits(reg)} );
             }
 
             #[inline(always)]
@@ -977,8 +933,8 @@ macro_rules! eusci_b_impl {
             }
 
             #[inline(always)]
-            fn ifg_wr(&self, reg: &UcbIFG) {
-                self.$ucbxifg().write(UcbIFG_wr! {reg});
+            fn ifg_wr(&self, reg: u16) {
+                self.$ucbxifg().write(|w| unsafe{w.bits(reg)} );
             }
 
             #[inline(always)]
