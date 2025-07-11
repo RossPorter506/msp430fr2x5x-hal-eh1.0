@@ -45,7 +45,7 @@ use crate::gpio::{Pin1, Pin5};
 use crate::hw_traits::eusci::I2CUcbIfgOut;
 use crate::{
     gpio::{Alternate1, Pin, Pin2, Pin3, Pin6, Pin7, P1, P4},
-    hw_traits::eusci::{EUsciI2C, UcbCtlw0, UcbCtlw1, UcbI2coa, UcbIFG, UcbIe, Ucmode, Ucssel},
+    hw_traits::eusci::{EUsciI2C, UcbCtlw0, UcbCtlw1, UcbI2coa, Ucmode, Ucssel},
     pac,
 };
 
@@ -106,8 +106,6 @@ pub struct I2cConfig<USCI: I2cUsci, CLKSRC, ROLE> {
     i2coa1: UcbI2coa,
     i2coa2: UcbI2coa,
     i2coa3: UcbI2coa,
-    ie: UcbIe,
-    ifg: UcbIFG,
     clk_src: PhantomData<CLKSRC>,
     role: PhantomData<ROLE>,
 }
@@ -201,8 +199,6 @@ macro_rules! return_self_config {
             i2coa1:  $self.i2coa1,
             i2coa2:  $self.i2coa2,
             i2coa3:  $self.i2coa3,
-            ie:      $self.ie,
-            ifg:     $self.ifg,
             clk_src: PhantomData,
             role: PhantomData,
         }
@@ -228,8 +224,6 @@ impl<USCI: I2cUsci> I2cConfig<USCI, NoClockSet, NoRoleSet> {
         let i2coa1 = UcbI2coa::default();
         let i2coa2 = UcbI2coa::default();
         let i2coa3 = UcbI2coa::default();
-        let ie = UcbIe::default();
-        let ifg = UcbIFG::default();
 
         I2cConfig {
             usci,
@@ -240,8 +234,6 @@ impl<USCI: I2cUsci> I2cConfig<USCI, NoClockSet, NoRoleSet> {
             i2coa1,
             i2coa2,
             i2coa3,
-            ie,
-            ifg,
             clk_src: PhantomData,
             role: PhantomData,
         }
@@ -331,8 +323,8 @@ impl<USCI: I2cUsci, RoleSet: I2cRole> I2cConfig<USCI, ClockSet, RoleSet> {
         self.usci.i2coa_wr(1, &self.i2coa1);
         self.usci.i2coa_wr(2, &self.i2coa2);
         self.usci.i2coa_wr(3, &self.i2coa3);
-        self.usci.ie_wr(&self.ie);
-        self.usci.ifg_wr(&self.ifg);
+        self.usci.ie_clr(0);
+        self.usci.ifg_rst();
 
         self.usci.brw_wr(self.divisor);
         self.usci.tbcnt_wr(0);
