@@ -51,7 +51,7 @@ use crate::{
 
 use core::convert::Infallible;
 use core::marker::PhantomData;
-use embedded_hal::i2c::{AddressMode, Operation, SevenBitAddress, TenBitAddress};
+use embedded_hal::i2c::{AddressMode, SevenBitAddress, TenBitAddress};
 use msp430::asm;
 use nb::Error::{WouldBlock, Other};
 /// Enumerates the two I2C addressing modes: 7-bit and 10-bit.
@@ -177,32 +177,18 @@ pub struct ClockSet;
 pub struct NoRoleSet;
 
 // Marker trait for I2C roles.
-trait I2cRole {
-    type ErrType;
-}
-trait RoleMaster: I2cRole {}
-trait RoleSlave: I2cRole {}
+trait I2cRole {}
 /// Typestate for an I2C bus being configured as a master on a bus with no other master devices present.
 pub struct SingleMaster;
-impl I2cRole for SingleMaster {
-    type ErrType = I2cSingleMasterErr;
-}
-impl RoleMaster for SingleMaster {}
+impl I2cRole for SingleMaster {}
 
 /// Typestate for an I2C bus being configured as a slave.
 pub struct Slave;
-impl I2cRole for Slave {
-    type ErrType = Infallible;
-}
-impl RoleSlave for Slave {}
+impl I2cRole for Slave {}
 
 /// Typestate for an I2C bus being configured as a master on a bus that has other master devices present.
 pub struct MultiMaster;
-impl I2cRole for MultiMaster {
-    type ErrType = I2cMultiMasterErr;
-}
-impl RoleMaster for MultiMaster {}
-impl RoleSlave for MultiMaster {}
+impl I2cRole for MultiMaster {}
 
 macro_rules! return_self_config {
     ($self: ident) => {
@@ -358,311 +344,198 @@ impl<USCI: I2cUsci, RoleSet: I2cRole> I2cConfig<USCI, ClockSet, RoleSet> {
 impl<USCI: I2cUsci> I2cConfig<USCI, ClockSet, SingleMaster> {
     /// Performs hardware configuration and creates the I2C bus
     #[inline(always)]
-    pub fn configure<SCL, SDA>(self, _scl: SCL, _sda: SDA) -> I2cDevice<USCI, SingleMaster> 
+    pub fn configure<SCL, SDA>(self, _scl: SCL, _sda: SDA) -> I2cSingleMaster<USCI> 
     where SCL: Into<USCI::ClockPin>, SDA: Into<USCI::DataPin> {
         self.configure_regs();
-        I2cDevice{ usci: self.usci, role: PhantomData }
+        I2cSingleMaster{ usci: self.usci }
     }
 }
 impl<USCI: I2cUsci> I2cConfig<USCI, ClockSet, MultiMaster> {
     /// Performs hardware configuration and creates the I2C bus
     #[inline(always)]
-    pub fn configure<SCL, SDA>(self, _scl: SCL, _sda: SDA) -> I2cDevice<USCI, MultiMaster> 
+    pub fn configure<SCL, SDA>(self, _scl: SCL, _sda: SDA) -> I2cMultiMaster<USCI> 
     where SCL: Into<USCI::ClockPin>, SDA: Into<USCI::DataPin> {
         self.configure_regs();
-        I2cDevice{ usci: self.usci, role: PhantomData }
+        I2cMultiMaster{ usci: self.usci }
     }
 }
 impl<USCI: I2cUsci> I2cConfig<USCI, ClockSet, Slave> {
     /// Performs hardware configuration and creates the I2C bus
     #[inline(always)]
-    pub fn configure<SCL, SDA>(self, _scl: SCL, _sda: SDA) -> I2cDevice<USCI, Slave> 
+    pub fn configure<SCL, SDA>(self, _scl: SCL, _sda: SDA) -> I2cSlave<USCI> 
     where SCL: Into<USCI::ClockPin>, SDA: Into<USCI::DataPin> {
         self.configure_regs();
-        I2cDevice{ usci: self.usci, role: PhantomData }
+        I2cSlave{ usci: self.usci }
     }
 }
 
-/// An eUSCI peripheral that has been configured as an I2C device. 
-/// `ROLE` determines whether it acts as a slave, single master, or multi-master device.
-pub struct I2cDevice<USCI, ROLE> {
+macro_rules! i2c_common {
+    () => {
+        /// Get the event that triggered the current interrupt. Used as part of the interrupt-based interface.
+        pub fn interrupt_source(&mut self) -> I2cVector {
+            use I2cVector::*;
+            match self.usci.iv_rd() {
+                0x00 => None,
+                0x02 => ArbitrationLost,
+                0x04 => NackReceived,
+                0x06 => StartReceived,
+                0x08 => StopReceived,
+                0x0A => Slave3RxBufFull,
+                0x0C => Slave3TxBufEmpty,
+                0x0E => Slave2RxBufFull,
+                0x10 => Slave2TxBufEmpty,
+                0x12 => Slave1RxBufFull,
+                0x14 => Slave1TxBufEmpty,
+                0x16 => RxBufFull,
+                0x18 => TxBufEmpty,
+                0x1A => ByteCounterZero,
+                0x1C => ClockLowTimeout,
+                0x1E => NinthBitReceived,
+                _ => unsafe{ core::hint::unreachable_unchecked() }
+            }
+        }
+
+        /// Send a NACK on the I2C bus. Only use during a receive operation. Used as part of the non-blocking / interrupt-based interface.
+        #[inline(always)]
+        pub fn send_nack(&mut self) {
+            self.usci.transmit_nack();
+        }
+
+        /// Get the number of bytes received/transmitted since the last Start or Repeated Start condition.
+        #[inline(always)]
+        pub fn byte_count(&mut self) -> u8 {
+            self.usci.byte_count()
+        }
+
+        /// Set the bits in the interrupt enable register that correspond to the bits set in `intrs`. 
+        /// 
+        /// This bitmask can be generated using [`I2cInterruptBits`].
+        #[inline(always)]
+        pub fn set_interrupts<I2cInterruptBits>(&mut self, intrs: I2cInterruptBits) 
+        where I2cInterruptBits: Into<u16> {
+            self.usci.ie_set(intrs.into())
+        }
+        /// Clear the bits in the interrupt enable register that correspond to the bits *set* in `intrs`. 
+        /// 
+        /// This bitmask can be generated using [`I2cInterruptBits`].
+        #[inline(always)]
+        pub fn clear_interrupts<I2cInterruptBits>(&mut self, intrs: I2cInterruptBits) 
+        where I2cInterruptBits: Into<u16> {
+            self.usci.ie_clr(!(intrs.into()))
+        }
+    };
+}
+
+macro_rules! i2c_masters {
+    ($err_type: ty) => {
+        /// Set the address of the slave you want to talk to. Used as part of the non-blocking interface. 
+        /// If a `u8` address is provided then the peripheral is put into 7-bit addressing mode. 
+        /// A `u16` address puts the peripheral into 10-bit addressing mode. 
+        #[inline]
+        pub fn set_target_address<TenOrSevenBit: AddressType>(&mut self, address: TenOrSevenBit) {
+            self.set_addressing_mode(TenOrSevenBit::addr_type());
+            self.usci.i2csa_wr(address.into());
+        }
+
+        #[inline(always)]
+        fn set_addressing_mode(&mut self, mode: AddressingMode) {
+            self.usci.set_ucsla10(mode.into())
+        }
+
+        /// Manually set the transmission mode. Used as part of the non-blocking interface.
+        #[inline(always)]
+        pub fn set_transmission_mode(&mut self, mode: TransmissionMode) {
+            self.usci.set_uctr(mode.into())
+        }
+
+        /// Manually send a start condition and address byte. Used as part of the non-blocking interface.
+        #[inline(always)]
+        pub fn send_start(&mut self) {
+            self.usci.transmit_start();
+        }
+
+        /// Manually schedule a stop condition to be sent. Used as part of the non-blocking interface.
+        /// 
+        /// The stop will be sent after the current byte operation. If the bus stalls waiting for the Rx or Tx buffer then the stop won't be sent until that condition is dealt with. 
+        #[inline(always)]
+        pub fn schedule_stop(&mut self) {
+            self.usci.transmit_stop();
+            self.usci.ifg_rst(); // For some reason the TXIFG flag needs to be cleared between transactions
+        }
+
+        /// Checks whether a slave with the specified address is present on the I2C bus.
+        /// Sends a zero-byte write and records whether the slave sends an ACK or not.
+        /// 
+        /// A u8 address will use the 7-bit addressing mode, a u16 address uses 10-bit addressing.
+        #[inline]
+        pub fn is_slave_present<TenOrSevenBit>(&mut self, address: TenOrSevenBit) -> Result<bool, $err_type> 
+        where TenOrSevenBit: AddressType {
+            self.set_addressing_mode(TenOrSevenBit::addr_type());
+            self.set_transmission_mode(TransmissionMode::Transmit);
+            use $err_type as E;
+            match self.blocking_write(address.into(), &[], true, true) {
+                Ok(_) => Ok(true),
+                Err(E::GotNACK(_)) => Ok(false),
+                #[allow(unreachable_patterns)] // I2cSingleMaster has only the GotNACK variant (for now)
+                Err(e) => Err(e),
+            }
+        }
+
+        /// In multi-operation transactions update the NACK byte error count to match *total* bytes sent 
+        #[inline]
+        fn add_nack_count(err: $err_type, bytes_already_sent: usize) -> $err_type {
+            use $err_type as E;
+            match err {
+                E::GotNACK(n) => E::GotNACK(n + bytes_already_sent),
+                e => e,
+            }
+        }
+
+        /// blocking write then blocking read
+        fn blocking_write_read(&mut self, address: u16, bytes: &[u8], buffer: &mut [u8]) -> Result<(), $err_type> {
+            self.set_transmission_mode(TransmissionMode::Transmit);
+            self.blocking_write(address, bytes, true, false)?;
+            self.set_transmission_mode(TransmissionMode::Receive);
+            self.blocking_read(address, buffer, true, true)
+                .map_err(|e| Self::add_nack_count(e, bytes.len()))
+        }
+    };
+}
+
+macro_rules! i2c_slaves {
+    () => {
+        /// Check the I2C bus flags for any events that should be dealt with. Returns `Err(WouldBlock)` if no events have occurred yet, otherwise `Ok(I2cEvent)`.
+        pub fn poll(&mut self) -> nb::Result<I2cEvent, Infallible> {
+            if self.usci.stop_received() {
+                self.usci.clear_start_stop_flags();
+                return Ok(I2cEvent::Stop);
+            }
+
+            match (self.usci.start_received(), self.usci.rxifg0_rd(), self.usci.is_transmitter() & self.usci.txifg0_rd()) {
+                (true,  true,  false) => {self.usci.clear_start_flag(); Ok(I2cEvent::WriteStart)},
+                (true,  false, true ) => {self.usci.clear_start_flag(); Ok(I2cEvent::ReadStart)},
+                (false, true,  false) => Ok(I2cEvent::Write),
+                (false, false, true ) => Ok(I2cEvent::Read),
+                // Rx buffer filled, then repeated start then Tx buffer empty. (Can't be reverse because empty Tx buf stalls the bus).
+                (true,  true,  true ) => Ok(I2cEvent::OverrunWrite), // Don't clear the start flag yet.
+                // Start flag but no Rx / Tx events yet. Don't clear the flag yet.
+                (_,     false, false) => Err(WouldBlock), 
+                // I don't believe this is ever reachable. 
+                (false, true,  true ) => unreachable!(), // TODO: Test and replace with unchecked
+            }
+        }
+    };
+}
+
+/// An eUSCI peripheral that has been configured as an I2C master.
+/// This variant offers simplified error handling and ease of use, but is not suitable for use on a multi-master bus.
+pub struct I2cSingleMaster<USCI> {
     usci: USCI,
-    role: PhantomData<ROLE>,
 }
-impl<USCI: I2cUsci, ROLE> I2cDevice<USCI, ROLE> {
-    /// Get the event that triggered the current interrupt. Used as part of the interrupt-based interface.
-    pub fn interrupt_source(&mut self) -> I2cVector {
-        use I2cVector::*;
-        match self.usci.iv_rd() {
-            0x00 => None,
-            0x02 => ArbitrationLost,
-            0x04 => NackReceived,
-            0x06 => StartReceived,
-            0x08 => StopReceived,
-            0x0A => Slave3RxBufFull,
-            0x0C => Slave3TxBufEmpty,
-            0x0E => Slave2RxBufFull,
-            0x10 => Slave2TxBufEmpty,
-            0x12 => Slave1RxBufFull,
-            0x14 => Slave1TxBufEmpty,
-            0x16 => RxBufFull,
-            0x18 => TxBufEmpty,
-            0x1A => ByteCounterZero,
-            0x1C => ClockLowTimeout,
-            0x1E => NinthBitReceived,
-            _ => unsafe{ core::hint::unreachable_unchecked() }
-        }
-    }
+impl<USCI: I2cUsci> I2cSingleMaster<USCI> {
+    i2c_common!();
+    i2c_masters!(I2cSingleMasterErr);
 
-    /// Send a NACK on the I2C bus. Only use during a receive operation. Used as part of the non-blocking / interrupt-based interface.
-    #[inline(always)]
-    pub fn send_nack(&mut self) {
-        self.usci.transmit_nack();
-    }
-
-    /// Get the number of bytes received/transmitted since the last Start or Repeated Start condition.
-    #[inline(always)]
-    pub fn byte_count(&mut self) -> u8 {
-        self.usci.byte_count()
-    }
-
-    /// Set the bits in the interrupt enable register that correspond to the bits set in `intrs`. 
-    /// 
-    /// This bitmask can be generated using [`I2cInterruptBits`].
-    #[inline(always)]
-    pub fn set_interrupts<I2cInterruptBits>(&mut self, intrs: I2cInterruptBits) 
-    where I2cInterruptBits: Into<u16> {
-        self.usci.ie_set(intrs.into())
-    }
-    /// Clear the bits in the interrupt enable register that correspond to the bits *set* in `intrs`. 
-    /// 
-    /// This bitmask can be generated using [`I2cInterruptBits`].
-    #[inline(always)]
-    pub fn clear_interrupts<I2cInterruptBits>(&mut self, intrs: I2cInterruptBits) 
-    where I2cInterruptBits: Into<u16> {
-        self.usci.ie_clr(!(intrs.into()))
-    }
-}
-#[allow(private_bounds)]
-impl<USCI: I2cUsci, MASTERS: RoleMaster> I2cDevice<USCI, MASTERS> {
-    /// Set the address of the slave you want to talk to. Used as part of the non-blocking interface. 
-    /// If a `u8` address is provided then the peripheral is put into 7-bit addressing mode. 
-    /// A `u16` address puts the peripheral into 10-bit addressing mode. 
-    #[inline]
-    pub fn set_target_address<TenOrSevenBit: AddressType>(&mut self, address: TenOrSevenBit) {
-        self.set_addressing_mode(TenOrSevenBit::addr_type());
-        self.usci.i2csa_wr(address.into());
-    }
-
-    #[inline(always)]
-    fn set_addressing_mode(&mut self, mode: AddressingMode) {
-        self.usci.set_ucsla10(mode.into())
-    }
-
-    /// Manually set the transmission mode. Used as part of the non-blocking interface.
-    #[inline(always)]
-    pub fn set_transmission_mode(&mut self, mode: TransmissionMode) {
-        self.usci.set_uctr(mode.into())
-    }
-
-    /// Manually send a start condition and address byte. Used as part of the non-blocking interface.
-    #[inline(always)]
-    pub fn send_start(&mut self) {
-        self.usci.transmit_start();
-    }
-
-    /// Manually schedule a stop condition to be sent. Used as part of the non-blocking interface.
-    /// 
-    /// The stop will be sent after the current byte operation. If the bus stalls waiting for the Rx or Tx buffer then the stop won't be sent until that condition is dealt with. 
-    #[inline(always)]
-    pub fn schedule_stop(&mut self) {
-        self.usci.transmit_stop();
-        self.usci.ifg_rst(); // For some reason the TXIFG flag needs to be cleared between transactions
-    }
-
-    /// Blocking read
-    // TODO: Arbitration and slave addressing
-    fn __read(&mut self, address: u16, buffer: &mut [u8], send_start: bool, send_stop: bool) -> Result<(), I2cMultiMasterErr> {
-        // Hardware doesn't support zero byte reads.
-        if buffer.is_empty() { return Ok(()) }
-
-        let usci = &mut self.usci;
-
-        if !usci.is_master() {
-            return Err(I2cMultiMasterErr::ArbitrationLost);
-        }
-        let ifg = usci.ifg_rd();
-        if ifg.ucalifg() {
-            return match ifg.ucsttifg() {
-                false => Err(I2cMultiMasterErr::ArbitrationLost),
-                true  => Err(I2cMultiMasterErr::AddressedAsSlave),
-            }
-        }
-
-        // Check if the eUSCI is addressing itself. The hardware isn't capable of this.
-        let own_addr_reg = usci.i2coa_rd(0);
-        if own_addr_reg.ucoaen && own_addr_reg.i2coa0 == address {
-            return Err(I2cMultiMasterErr::TriedAddressingSelf);
-        }
-
-        // Clear any flags from previous transactions
-        usci.ifg_rst();
-        
-        usci.i2csa_wr(address);
-
-        if send_start {
-            usci.transmit_start();
-            // Wait for initial address byte and (N)ACK to complete.
-            while usci.uctxstt_rd() {
-                asm::nop();
-            }
-        }
-
-        let len = buffer.len();
-        for (idx, byte) in buffer.iter_mut().enumerate() {
-            if send_stop && (idx == len - 1) {
-                usci.transmit_stop();
-            }
-            loop {
-                let ifg = usci.ifg_rd();
-                // If NACK (from initial address packet), send STOP and abort
-                if ifg.ucnackifg() {
-                    usci.transmit_stop();
-                    while usci.uctxstp_rd() {
-                        asm::nop();
-                    }
-                    return Err(I2cMultiMasterErr::GotNACK(idx));
-                }
-                // If byte recieved
-                if ifg.ucrxifg0() {
-                    break;
-                }
-            }
-            *byte = usci.ucrxbuf_rd();
-        }
-
-        if send_stop {
-            while usci.uctxstp_rd() {
-                asm::nop();
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Blocking write
-    // TODO: Arbitration and slave addressing
-    fn __write(&mut self, address: u16, bytes: &[u8], mut send_start: bool, mut send_stop: bool) -> Result<(), I2cMultiMasterErr> {
-        // The only way to perform a zero byte write is with a start + stop
-        if bytes.is_empty() {
-            send_start = true;
-            send_stop = true;
-        }
-
-        let usci = &mut self.usci;
-
-        if !usci.is_master() {
-            return Err(I2cMultiMasterErr::ArbitrationLost);
-        }
-        let ifg = usci.ifg_rd();
-        if ifg.ucalifg() {
-            return match ifg.ucsttifg() {
-                false => Err(I2cMultiMasterErr::ArbitrationLost),
-                true  => Err(I2cMultiMasterErr::AddressedAsSlave),
-            }
-        }
-
-        // Check if the eUSCI is addressing itself. The hardware isn't capable of this.
-        let own_addr_reg = usci.i2coa_rd(0);
-        if own_addr_reg.ucoaen && own_addr_reg.i2coa0 == address {
-            return Err(I2cMultiMasterErr::TriedAddressingSelf);
-        }
-
-        // Clear any flags from previous transactions
-        usci.ifg_rst();
-
-        usci.i2csa_wr(address);
-
-        if send_start {
-            usci.transmit_start();
-        }
-
-        for (idx, &byte) in bytes.iter().enumerate() {
-            loop {
-                let ifg = usci.ifg_rd();
-                if ifg.ucnackifg() {
-                    usci.transmit_stop();
-                    while usci.uctxstp_rd() {
-                        asm::nop();
-                    }
-                    return Err(I2cMultiMasterErr::GotNACK(idx));
-                }
-                if ifg.ucalifg() {
-                    return match ifg.ucsttifg() {
-                        false => Err(I2cMultiMasterErr::ArbitrationLost), // Lost arbitration
-                        true  => Err(I2cMultiMasterErr::AddressedAsSlave),// Lost arbitration and the slave address was us
-                    }
-                }
-                if ifg.uctxifg0() {
-                    break;
-                }
-            }
-            usci.uctxbuf_wr(byte);
-        } 
-
-        while !usci.ifg_rd().uctxifg0() {
-            asm::nop();
-        }
-
-        if send_stop {
-            usci.transmit_stop();
-            while usci.uctxstp_rd() {
-                // This is mainly for catching NACKs in a zero-byte write
-                if usci.ifg_rd().ucnackifg() {
-                    return Err(I2cMultiMasterErr::GotNACK(bytes.len()));
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    #[inline]
-    fn _is_slave_present<TenOrSevenBit>(&mut self, address: TenOrSevenBit) -> Result<bool, I2cMultiMasterErr> 
-    where TenOrSevenBit: AddressType {
-        self.set_addressing_mode(TenOrSevenBit::addr_type());
-        self.set_transmission_mode(TransmissionMode::Transmit);
-        match self.__write(address.into(), &[], true, true) {
-            Ok(_) => Ok(true),
-            Err(I2cMultiMasterErr::GotNACK(_)) => Ok(false),
-            Err(e) => Err(e),
-        }
-    }
-}
-#[allow(private_bounds)]
-impl<USCI: I2cUsci, SLAVES: RoleSlave> I2cDevice<USCI, SLAVES> {
-    /// Check the I2C bus flags for any events that should be dealt with. Returns `Err(WouldBlock)` if no events have occurred yet, otherwise `Ok(I2cEvent)`.
-    pub fn poll(&mut self) -> nb::Result<I2cEvent, Infallible> {
-        if self.usci.stop_received() {
-            self.usci.clear_start_stop_flags();
-            return Ok(I2cEvent::Stop);
-        }
-
-        match (self.usci.start_received(), self.usci.rxifg0_rd(), self.usci.is_transmitter() & self.usci.txifg0_rd()) {
-            (true,  true,  false) => {self.usci.clear_start_flag(); Ok(I2cEvent::WriteStart)},
-            (true,  false, true ) => {self.usci.clear_start_flag(); Ok(I2cEvent::ReadStart)},
-            (false, true,  false) => Ok(I2cEvent::Write),
-            (false, false, true ) => Ok(I2cEvent::Read),
-            // Rx buffer filled, then repeated start then Tx buffer empty. (Can't be reverse because empty Tx buf stalls the bus).
-            (true,  true,  true ) => Ok(I2cEvent::OverrunWrite), // Don't clear the start flag yet.
-            // Start flag but no Rx / Tx events yet. Don't clear the flag yet.
-            (_,     false, false) => Err(WouldBlock), 
-            // I don't believe this is ever reachable. 
-            (false, true,  true ) => unreachable!(), // TODO: Test and replace with unchecked
-        }
-    }
-}
-impl<USCI: I2cUsci> I2cDevice<USCI, SingleMaster> {
     /// Check if the Rx buffer is full, if so read it. Used as part of the non-blocking / interrupt-based interface.
     /// 
     /// Returns `Err(WouldBlock)` if the Rx buffer is empty, `Err(GotNACK(n))` if a NACK was received 
@@ -698,54 +571,37 @@ impl<USCI: I2cUsci> I2cDevice<USCI, SingleMaster> {
         Ok(())
     }
 
-    /// Discard impossible to reach errors
-    #[inline]
-    fn multi_to_single_err(err: I2cMultiMasterErr) -> I2cSingleMasterErr {
-        match err {
-            I2cMultiMasterErr::GotNACK(n) => I2cSingleMasterErr::GotNACK(n),
-            _ => unreachable!(), // TODO: Replace with unchecked after some testing
-        }
-    }
-
     #[inline(always)]
-    fn _write(&mut self, address: u16, bytes: &[u8], send_start: bool, send_stop: bool) -> Result<(), I2cSingleMasterErr> {
-        self.__write(address, bytes, send_start, send_stop).map_err(Self::multi_to_single_err)
+    fn blocking_write(&mut self, address: u16, bytes: &[u8], send_start: bool, send_stop: bool) -> Result<(), I2cSingleMasterErr> {
+        blocking_write_base(&mut self.usci, address, bytes, send_start, send_stop, Self::handle_errs)
     }
-
     #[inline(always)]
-    fn _read(&mut self, address: u16, buffer: &mut [u8], send_start: bool, send_stop: bool) -> Result<(), I2cSingleMasterErr> {
-        self.__read(address, buffer, send_start, send_stop).map_err(Self::multi_to_single_err)
+    fn blocking_read(&mut self, address: u16, buffer: &mut [u8], send_start: bool, send_stop: bool) -> Result<(), I2cSingleMasterErr> {
+        blocking_read_base(&mut self.usci, address, buffer, send_start, send_stop, Self::handle_errs)
     }
     
-    /// Checks whether a slave with the specified address is present on the I2C bus.
-    /// Sends a zero-byte write and records whether the slave sends an ACK or not.
-    /// 
-    /// A u8 address will use the 7-bit addressing mode, a u16 address uses 10-bit addressing.
-    #[inline(always)]
-    pub fn is_slave_present<TenOrSevenBit>(&mut self, address: TenOrSevenBit) -> Result<bool, I2cSingleMasterErr> 
-    where TenOrSevenBit: AddressType {
-        self._is_slave_present(address).map_err(Self::multi_to_single_err)
-    }
-
-    /// blocking write then blocking read
-    fn _write_read(&mut self, address: u16, bytes: &[u8], buffer: &mut [u8]) -> Result<(), I2cSingleMasterErr> {
-        self.set_transmission_mode(TransmissionMode::Transmit);
-        self._write(address, bytes, true, false)?;
-        self.set_transmission_mode(TransmissionMode::Receive);
-        self._read(address, buffer, true, true)
-            .map_err(|e| Self::add_nack_count(e, bytes.len()))
-    }
-
-    /// In multi-operation transactions update the NACK byte error count to match *total* bytes sent 
-    #[inline]
-    fn add_nack_count(err: I2cSingleMasterErr, bytes_already_sent: usize) -> I2cSingleMasterErr {
-        match err {
-            I2cSingleMasterErr::GotNACK(n) => I2cSingleMasterErr::GotNACK(n + bytes_already_sent),
-            e => e,
+    fn handle_errs(usci: &mut USCI, ifg: &USCI::IfgOut, idx: usize) -> Result<(), I2cSingleMasterErr> {
+        if ifg.ucnackifg() {
+            usci.transmit_stop();
+            while usci.uctxstp_rd() {
+                asm::nop();
+            }
+            return Err(I2cSingleMasterErr::GotNACK(idx));
         }
+        Ok(())
     }
 }
-impl<USCI: I2cUsci> I2cDevice<USCI, MultiMaster> {
+
+/// An eUSCI peripheral that has been configured as an I2C multi-master.
+/// Multi-masters are capable of sharing an I2C bus with other multi-masters, and may also optionally act as a slave device (depending on configuration). 
+pub struct I2cMultiMaster<USCI> {
+    usci: USCI,
+}
+impl<USCI: I2cUsci> I2cMultiMaster<USCI> {
+    i2c_common!();
+    i2c_masters!(I2cMultiMasterErr);
+    i2c_slaves!();
+
     /// Check if the Rx buffer is full, if so read it. Used as part of the non-blocking / interrupt-based interface.
     /// 
     /// Returns `Err(WouldBlock)` if the buffer is still full, 
@@ -846,24 +702,51 @@ impl<USCI: I2cUsci> I2cDevice<USCI, MultiMaster> {
         self.usci.uctxbuf_wr(byte);
     }
 
-    #[inline(always)]
-    fn _write(&mut self, address: u16, bytes: &[u8], send_start: bool, send_stop: bool) -> Result<(), I2cMultiMasterErr> {
-        self.__write(address, bytes, send_start, send_stop)
+    fn blocking_write(&mut self, address: u16, bytes: &[u8], send_start: bool, send_stop: bool) -> Result<(), I2cMultiMasterErr> {
+        self.can_proceed(address)?;
+        blocking_write_base(&mut self.usci, address, bytes, send_start, send_stop, Self::handle_errs)
     }
 
-    #[inline(always)]
-    fn _read(&mut self, address: u16, buffer: &mut [u8], send_start: bool, send_stop: bool) -> Result<(), I2cMultiMasterErr> {
-        self.__read(address, buffer, send_start, send_stop)
+    fn blocking_read(&mut self, address: u16, buffer: &mut [u8], send_start: bool, send_stop: bool) -> Result<(), I2cMultiMasterErr> {
+        self.can_proceed(address)?;
+        blocking_read_base(&mut self.usci, address, buffer, send_start, send_stop, Self::handle_errs)
     }
 
-    /// Checks whether a slave with the specified address is present on the I2C bus.
-    /// Sends a zero-byte write and records whether the slave sends an ACK or not.
-    /// 
-    /// A u8 address will use the 7-bit addressing mode, a u16 address uses 10-bit addressing.
-    #[inline(always)]
-    pub fn is_slave_present<TenOrSevenBit>(&mut self, address: TenOrSevenBit) -> Result<bool, I2cMultiMasterErr> 
-    where TenOrSevenBit: AddressType {
-        self._is_slave_present(address)
+    // Test whether a master operation can proceed
+    #[inline]
+    fn can_proceed(&mut self, address: u16) -> Result<(), I2cMultiMasterErr> {
+        // Are we a master? If not, why?
+        if !self.usci.is_master() {
+            return match self.usci.ifg_rd().ucsttifg() {
+                false => Err(I2cMultiMasterErr::ArbitrationLost),
+                true  => Err(I2cMultiMasterErr::AddressedAsSlave),
+            }
+        }
+        // Check if the eUSCI is addressing itself. The hardware isn't capable of this.
+        let own_addr_reg = self.usci.i2coa_rd(0);
+        if own_addr_reg.ucoaen && own_addr_reg.i2coa0 == address {
+            return Err(I2cMultiMasterErr::TriedAddressingSelf);
+        }
+        Ok(())
+    }
+
+    // Check error flags during Tx / Rx operation
+    #[inline]
+    fn handle_errs(usci: &mut USCI, ifg: &USCI::IfgOut, idx: usize) -> Result<(), I2cMultiMasterErr> {
+        if ifg.ucnackifg() {
+            usci.transmit_stop();
+            while usci.uctxstp_rd() {
+                asm::nop();
+            }
+            return Err(I2cMultiMasterErr::GotNACK(idx));
+        }
+        if ifg.ucalifg() {
+            return match ifg.ucsttifg() {
+                false => Err(I2cMultiMasterErr::ArbitrationLost), // Lost arbitration
+                true  => Err(I2cMultiMasterErr::AddressedAsSlave),// Lost arbitration and the slave address was us
+            }
+        }
+        Ok(())
     }
 
     /// After losing arbitration (or after being addressed as a slave) call this method to return the peripheral to master mode.
@@ -871,26 +754,16 @@ impl<USCI: I2cUsci> I2cDevice<USCI, MultiMaster> {
     pub fn return_to_master(&mut self) {
         self.usci.set_master();
     }
-
-    /// In multi-operation transactions update the NACK byte error count to match *total* bytes sent 
-    #[inline]
-    fn add_nack_count(err: I2cMultiMasterErr, bytes_already_sent: usize) -> I2cMultiMasterErr {
-        match err {
-            I2cMultiMasterErr::GotNACK(n) => I2cMultiMasterErr::GotNACK(n + bytes_already_sent),
-            e => e,
-        }
-    }
-    
-    /// blocking write then blocking read
-    fn _write_read(&mut self, address: u16, bytes: &[u8], buffer: &mut [u8]) -> Result<(), I2cMultiMasterErr> {
-        self.set_transmission_mode(TransmissionMode::Transmit);
-        self._write(address, bytes, true, false)?;
-        self.set_transmission_mode(TransmissionMode::Receive);
-        self._read(address, buffer, true, true)
-            .map_err(|e| Self::add_nack_count(e, bytes.len()))
-    }
 }
-impl<USCI: I2cUsci> I2cDevice<USCI, Slave> {
+
+/// An eUSCI peripheral that has been configured as an I2C slave. 
+pub struct I2cSlave<USCI> {
+    usci: USCI,
+}
+impl<USCI: I2cUsci> I2cSlave<USCI> {
+    i2c_common!();
+    i2c_slaves!();
+
     /// Read the Rx buffer without checking if it's ready. 
     /// Useful in cases where you already know the Rx buffer is ready (e.g. an Rx interrupt occurred).
     /// Used as part of the non-blocking / interrupt-based interface.
@@ -933,6 +806,101 @@ impl<USCI: I2cUsci> I2cDevice<USCI, Slave> {
     }
 }
 
+type HandleErrorFn<USCI, E> = fn(&mut USCI, &<USCI as EUsciI2C>::IfgOut, usize) -> Result<(), E>;
+
+fn blocking_write_base<USCI: I2cUsci, E: From<I2cSingleMasterErr>>(
+    usci: &mut USCI, 
+    address: u16, 
+    bytes: &[u8], 
+    mut send_start: bool,
+    mut send_stop: bool, 
+    handle_errs: HandleErrorFn<USCI, E>) -> Result<(), E> {
+    // The only way to perform a zero byte write is with a start + stop
+    if bytes.is_empty() {
+        send_start = true;
+        send_stop = true;
+    }
+
+    // Clear any flags from previous transactions
+    usci.ifg_rst();
+    usci.i2csa_wr(address);
+
+    if send_start {
+        usci.transmit_start();
+    }
+
+    for (idx, &byte) in bytes.iter().enumerate() {
+        loop {
+            let ifg = usci.ifg_rd();
+            handle_errs(usci, &ifg, idx)?;
+            if ifg.uctxifg0() {
+                break;
+            }
+        }
+        usci.uctxbuf_wr(byte);
+    } 
+    while !usci.ifg_rd().uctxifg0() {
+        asm::nop();
+    }
+
+    if send_stop {
+        usci.transmit_stop();
+        while usci.uctxstp_rd() {
+            // This is mainly for catching NACKs in a zero-byte write
+            if usci.ifg_rd().ucnackifg() {
+                return Err(I2cSingleMasterErr::GotNACK(bytes.len()).into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn blocking_read_base<USCI: I2cUsci, E: From<I2cSingleMasterErr>>(
+    usci: &mut USCI, 
+    address: u16, 
+    buffer: &mut [u8], 
+    send_start: bool, 
+    send_stop: bool, 
+    handle_errs: HandleErrorFn<USCI, E>) -> Result<(), E> {
+    // Hardware doesn't support zero byte reads.
+    if buffer.is_empty() { return Ok(()) }
+
+    // Clear any flags from previous transactions
+    usci.ifg_rst();
+    usci.i2csa_wr(address);
+
+    if send_start {
+        usci.transmit_start();
+        // Wait for initial address byte and (N)ACK to complete.
+        while usci.uctxstt_rd() {
+            asm::nop();
+        }
+    }
+
+    let len = buffer.len();
+    for (idx, byte) in buffer.iter_mut().enumerate() {
+        if send_stop && (idx == len - 1) {
+            usci.transmit_stop();
+        }
+        loop {
+            let ifg = usci.ifg_rd();
+            handle_errs(usci, &ifg, idx)?;
+            if ifg.ucrxifg0() {
+                break;
+            }
+        }
+        *byte = usci.ucrxbuf_rd();
+    }
+
+    if send_stop {
+        while usci.uctxstp_rd() {
+            asm::nop();
+        }
+    }
+
+    Ok(())
+}
+
 /// I2C transmit/receive errors on a single master I2C bus.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
@@ -945,6 +913,13 @@ pub enum I2cSingleMasterErr {
     GotNACK(usize),
     // Other errors like the 'clock low timeout' UCCLTOIFG may appear here in future.
 }
+impl From<I2cSingleMasterErr> for I2cMultiMasterErr {
+    fn from(value: I2cSingleMasterErr) -> Self {
+        match value {
+            I2cSingleMasterErr::GotNACK(n) => I2cMultiMasterErr::GotNACK(n),
+        }
+    }
+} 
 
 /// I2C transmit/receive errors on a multi-master I2C bus.
 #[derive(Clone, Copy, Debug)]
@@ -1110,53 +1085,57 @@ impl AddressType for TenBitAddress {
     }
 }
 
-/// Implement embedded-hal's [`I2c`](embedded_hal::i2c::I2c) trait
-macro_rules! impl_ehal_i2c {
-    ($role: ty) => {
-        impl<USCI: I2cUsci, TenOrSevenBit> I2c<TenOrSevenBit> for I2cDevice<USCI, $role> 
-        where TenOrSevenBit: AddressType {
-            fn transaction(&mut self, address: TenOrSevenBit, ops: &mut [Operation<'_>]) -> Result<(), Self::Error> {
-                self.set_addressing_mode(TenOrSevenBit::addr_type());
-                
-                let mut prev_discr = None;
-                let mut bytes_sent = 0;
-                let len = ops.len();
-                for (i, op) in ops.iter_mut().enumerate() {
-                    // Send a start if this is the first operation, 
-                    // or if the previous operation was a different type (e.g. Read and Write)
-                    let send_start = match prev_discr {
-                        None => true,
-                        Some(prev) => prev != core::mem::discriminant(op),
-                    };
-                    // Send a stop only if this is the last operation
-                    let send_stop = i == (len - 1);
-                    
-                    match op {
-                        Operation::Read(ref mut items) => {
-                            self.set_transmission_mode(TransmissionMode::Receive);
-                            self._read(address.into(), items, send_start, send_stop)
-                                .map_err(|e| Self::add_nack_count(e, bytes_sent))?;
-                            bytes_sent += items.len();
-                        }
-                        Operation::Write(items) => {
-                            self.set_transmission_mode(TransmissionMode::Transmit);
-                            self._write(address.into(), items, send_start, send_stop)
-                                .map_err(|e| Self::add_nack_count(e, bytes_sent))?;
-                            bytes_sent += items.len();
-                        }
-                    }
-                    prev_discr = Some(core::mem::discriminant(op));
-                }
-                Ok(())
-            }
-        }
-    };
-}
-
 mod ehal1 {
     use embedded_hal::i2c::{Error, ErrorKind, ErrorType, I2c, Operation, NoAcknowledgeSource};
     use super::*;
 
+    /// Implement embedded-hal's [`I2c`](embedded_hal::i2c::I2c) trait
+    macro_rules! impl_ehal_i2c {
+        ($type: ty, $err_type: ty) => {
+            impl<USCI: I2cUsci, TenOrSevenBit> I2c<TenOrSevenBit> for $type 
+            where TenOrSevenBit: AddressType {
+                fn transaction(&mut self, address: TenOrSevenBit, ops: &mut [Operation<'_>]) -> Result<(), Self::Error> {
+                    self.set_addressing_mode(TenOrSevenBit::addr_type());
+                    
+                    let mut prev_discr = None;
+                    let mut bytes_sent = 0;
+                    let len = ops.len();
+                    for (i, op) in ops.iter_mut().enumerate() {
+                        // Send a start if this is the first operation, 
+                        // or if the previous operation was a different type (e.g. Read and Write)
+                        let send_start = match prev_discr {
+                            None => true,
+                            Some(prev) => prev != core::mem::discriminant(op),
+                        };
+                        // Send a stop only if this is the last operation
+                        let send_stop = i == (len - 1);
+                        
+                        match op {
+                            Operation::Read(ref mut items) => {
+                                self.set_transmission_mode(TransmissionMode::Receive);
+                                self.blocking_read(address.into(), items, send_start, send_stop)
+                                    .map_err(|e| Self::add_nack_count(e, bytes_sent))?;
+                                bytes_sent += items.len();
+                            }
+                            Operation::Write(items) => {
+                                self.set_transmission_mode(TransmissionMode::Transmit);
+                                self.blocking_write(address.into(), items, send_start, send_stop)
+                                    .map_err(|e| Self::add_nack_count(e, bytes_sent))?;
+                                bytes_sent += items.len();
+                            }
+                        }
+                        prev_discr = Some(core::mem::discriminant(op));
+                    }
+                    Ok(())
+                }
+            }
+            impl<USCI: I2cUsci> ErrorType for $type {
+                type Error = $err_type;
+            }
+        };
+    }
+
+    impl_ehal_i2c!(I2cSingleMaster<USCI>, I2cSingleMasterErr);
     impl Error for I2cSingleMasterErr {
         fn kind(&self) -> ErrorKind {
             match self {
@@ -1165,11 +1144,8 @@ mod ehal1 {
             }
         }
     }
-    impl<USCI: I2cUsci> ErrorType for I2cDevice<USCI, SingleMaster> {
-        type Error = I2cSingleMasterErr;
-    }
-    impl_ehal_i2c!(SingleMaster);
 
+    impl_ehal_i2c!(I2cMultiMaster<USCI>, I2cMultiMasterErr);
     impl Error for I2cMultiMasterErr {
         fn kind(&self) -> ErrorKind {
             match self {
@@ -1181,10 +1157,6 @@ mod ehal1 {
             }
         }
     }
-    impl<USCI: I2cUsci> ErrorType for I2cDevice<USCI, MultiMaster> {
-        type Error = I2cMultiMasterErr;
-    }
-    impl_ehal_i2c!(MultiMaster);
 }
 
 #[cfg(feature = "embedded-hal-02")]
@@ -1197,37 +1169,37 @@ mod ehal02 {
             impl<USCI: I2cUsci, SevenOrTenBit> Read<SevenOrTenBit> for $type
             where SevenOrTenBit: AddressMode + AddressType {
                 type Error = $err_type;
-        fn read(&mut self, address: SevenOrTenBit, buffer: &mut [u8]) -> Result<(), Self::Error> {
-            self.set_addressing_mode(SevenOrTenBit::addr_type());
-            self.set_transmission_mode(TransmissionMode::Receive);
-            self._read(address.into(), buffer, true, true)
-        }
-    }
+                fn read(&mut self, address: SevenOrTenBit, buffer: &mut [u8]) -> Result<(), Self::Error> {
+                    self.set_addressing_mode(SevenOrTenBit::addr_type());
+                    self.set_transmission_mode(TransmissionMode::Receive);
+                    self.blocking_read(address.into(), buffer, true, true)
+                }
+            }
             impl<USCI: I2cUsci, SevenOrTenBit> Write<SevenOrTenBit> for $type 
             where SevenOrTenBit: AddressMode + AddressType {
                 type Error = $err_type;
-        fn write(&mut self, address: SevenOrTenBit, bytes: &[u8]) -> Result<(), Self::Error> {
-            self.set_addressing_mode(SevenOrTenBit::addr_type());
-            self.set_transmission_mode(TransmissionMode::Transmit);
-            self._write(address.into(), bytes, true, true)
-        }
-    }
+                fn write(&mut self, address: SevenOrTenBit, bytes: &[u8]) -> Result<(), Self::Error> {
+                    self.set_addressing_mode(SevenOrTenBit::addr_type());
+                    self.set_transmission_mode(TransmissionMode::Transmit);
+                    self.blocking_write(address.into(), bytes, true, true)
+                }
+            }
             impl<USCI: I2cUsci, SevenOrTenBit> WriteRead<SevenOrTenBit> for $type  
             where SevenOrTenBit: AddressMode + AddressType {
                 type Error = $err_type;
-        fn write_read(
-            &mut self,
-            address: SevenOrTenBit,
-            bytes: &[u8],
-            buffer: &mut [u8],
-        ) -> Result<(), Self::Error> {
-            self.set_addressing_mode(SevenOrTenBit::addr_type());
-            self._write_read(address.into(), bytes, buffer)
-        }
+                fn write_read(
+                    &mut self,
+                    address: SevenOrTenBit,
+                    bytes: &[u8],
+                    buffer: &mut [u8],
+                ) -> Result<(), Self::Error> {
+                    self.set_addressing_mode(SevenOrTenBit::addr_type());
+                    self.blocking_write_read(address.into(), bytes, buffer)
+                }
             }
         };
     }
 
-    impl_ehal02_i2c!(I2cDevice<USCI, SingleMaster>, I2cSingleMasterErr);
-    impl_ehal02_i2c!(I2cDevice<USCI, MultiMaster>,  I2cMultiMasterErr);
+    impl_ehal02_i2c!(I2cSingleMaster<USCI>, I2cSingleMasterErr);
+    impl_ehal02_i2c!(I2cMultiMaster<USCI>,  I2cMultiMasterErr);
 }

@@ -21,11 +21,11 @@ use msp430_atomic::AtomicU8;
 use msp430_rt::entry;
 use msp430fr2355::{interrupt, E_USCI_B1};
 use msp430fr2x5x_hal::{
-    clock::{ClockConfig, DcoclkFreqSel, MclkDiv, SmclkDiv}, fram::Fram, gpio::Batch, i2c::{GlitchFilter, I2cDevice, I2cConfig, I2cInterruptBits, I2cVector, Slave}, pmm::Pmm, watchdog::Wdt
+    clock::{ClockConfig, DcoclkFreqSel, MclkDiv, SmclkDiv}, fram::Fram, gpio::Batch, i2c::{GlitchFilter, I2cConfig, I2cInterruptBits, I2cVector, I2cSlave}, pmm::Pmm, watchdog::Wdt
 };
 use panic_msp430 as _;
 
-static I2C_SLAVE: Mutex<RefCell<Option< I2cDevice<E_USCI_B1, Slave> >>> = Mutex::new(RefCell::new(None));
+static I2C_SLAVE: Mutex<RefCell<Option< I2cSlave<E_USCI_B1> >>> = Mutex::new(RefCell::new(None));
 
 // Store the exposed 'registers' as Atomic values, so they can be easily read/written to between the interrupt and main fn
 const ARR_LEN: usize = 10;

@@ -21,11 +21,11 @@ use msp430_rt::{entry};
 use msp430fr2355::{interrupt, E_USCI_B1};
 use msp430fr2x5x_hal::{
     clock::{ClockConfig, DcoclkFreqSel, MclkDiv, SmclkDiv}, fram::Fram, gpio::Batch, 
-    i2c::{GlitchFilter, I2cConfig, I2cDevice, I2cEvent, I2cInterruptBits, I2cVector, MultiMaster, TransmissionMode}, pmm::Pmm, watchdog::Wdt
+    i2c::{GlitchFilter, I2cConfig, I2cInterruptBits, I2cMultiMaster, I2cVector}, pmm::Pmm, watchdog::Wdt
 };
 use panic_msp430 as _;
 
-static I2C_MULTI_MASTER: Mutex<RefCell<Option< I2cDevice<E_USCI_B1, MultiMaster> >>> = Mutex::new(RefCell::new(None));
+static I2C_MULTI_MASTER: Mutex<RefCell<Option< I2cMultiMaster<E_USCI_B1> >>> = Mutex::new(RefCell::new(None));
 
 #[entry]
 fn main() -> ! {
