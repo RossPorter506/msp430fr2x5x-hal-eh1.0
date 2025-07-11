@@ -51,7 +51,7 @@ use crate::{
 
 use core::convert::Infallible;
 use core::marker::PhantomData;
-use embedded_hal::i2c::{AddressMode, SevenBitAddress, TenBitAddress};
+use embedded_hal::i2c::{AddressMode, Operation, SevenBitAddress, TenBitAddress};
 use msp430::asm;
 use nb::Error::{WouldBlock, Other};
 /// Enumerates the two I2C addressing modes: 7-bit and 10-bit.
@@ -1110,6 +1110,49 @@ impl AddressType for TenBitAddress {
     }
 }
 
+/// Implement embedded-hal's [`I2c`](embedded_hal::i2c::I2c) trait
+macro_rules! impl_ehal_i2c {
+    ($role: ty) => {
+        impl<USCI: I2cUsci, TenOrSevenBit> I2c<TenOrSevenBit> for I2cDevice<USCI, $role> 
+        where TenOrSevenBit: AddressType {
+            fn transaction(&mut self, address: TenOrSevenBit, ops: &mut [Operation<'_>]) -> Result<(), Self::Error> {
+                self.set_addressing_mode(TenOrSevenBit::addr_type());
+                
+                let mut prev_discr = None;
+                let mut bytes_sent = 0;
+                let len = ops.len();
+                for (i, op) in ops.iter_mut().enumerate() {
+                    // Send a start if this is the first operation, 
+                    // or if the previous operation was a different type (e.g. Read and Write)
+                    let send_start = match prev_discr {
+                        None => true,
+                        Some(prev) => prev != core::mem::discriminant(op),
+                    };
+                    // Send a stop only if this is the last operation
+                    let send_stop = i == (len - 1);
+                    
+                    match op {
+                        Operation::Read(ref mut items) => {
+                            self.set_transmission_mode(TransmissionMode::Receive);
+                            self._read(address.into(), items, send_start, send_stop)
+                                .map_err(|e| Self::add_nack_count(e, bytes_sent))?;
+                            bytes_sent += items.len();
+                        }
+                        Operation::Write(items) => {
+                            self.set_transmission_mode(TransmissionMode::Transmit);
+                            self._write(address.into(), items, send_start, send_stop)
+                                .map_err(|e| Self::add_nack_count(e, bytes_sent))?;
+                            bytes_sent += items.len();
+                        }
+                    }
+                    prev_discr = Some(core::mem::discriminant(op));
+                }
+                Ok(())
+            }
+        }
+    };
+}
+
 mod ehal1 {
     use embedded_hal::i2c::{Error, ErrorKind, ErrorType, I2c, Operation, NoAcknowledgeSource};
     use super::*;
@@ -1117,95 +1160,61 @@ mod ehal1 {
     impl Error for I2cSingleMasterErr {
         fn kind(&self) -> ErrorKind {
             match self {
-                I2cSingleMasterErr::GotNACK(0)       => ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address),
-                I2cSingleMasterErr::GotNACK(_)       => ErrorKind::NoAcknowledge(NoAcknowledgeSource::Data),
+                I2cSingleMasterErr::GotNACK(0)  => ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address),
+                I2cSingleMasterErr::GotNACK(_)  => ErrorKind::NoAcknowledge(NoAcknowledgeSource::Data),
             }
         }
     }
-
     impl<USCI: I2cUsci> ErrorType for I2cDevice<USCI, SingleMaster> {
         type Error = I2cSingleMasterErr;
     }
-
-    impl<USCI: I2cUsci, TenOrSevenBit> I2c<TenOrSevenBit> for I2cDevice<USCI, SingleMaster> 
-    where TenOrSevenBit: AddressType {
-        fn transaction(&mut self, address: TenOrSevenBit, ops: &mut [Operation<'_>]) -> Result<(), Self::Error> {
-            self.set_addressing_mode(TenOrSevenBit::addr_type());
-            
-            let mut prev_discr = None;
-            let mut bytes_sent = 0;
-            let len = ops.len();
-            for (i, op) in ops.iter_mut().enumerate() {
-                // Send a start if this is the first operation, 
-                // or if the previous operation was a different type (e.g. Read and Write)
-                let send_start = match prev_discr {
-                    None => true,
-                    Some(prev) => prev != core::mem::discriminant(op),
-                };
-                // Send a stop only if this is the last operation
-                let send_stop = i == (len - 1);
-                
-                match op {
-                    Operation::Read(ref mut items) => {
-                        self.set_transmission_mode(TransmissionMode::Receive);
-                        self._read(address.into(), items, send_start, send_stop)
-                            .map_err(|e| Self::add_nack_count(e, bytes_sent))?;
-                        bytes_sent += items.len();
-                    }
-                    Operation::Write(items) => {
-                        self.set_transmission_mode(TransmissionMode::Transmit);
-                        self._write(address.into(), items, send_start, send_stop)
-                            .map_err(|e| Self::add_nack_count(e, bytes_sent))?;
-                        bytes_sent += items.len();
-                    }
-                }
-                prev_discr = Some(core::mem::discriminant(op));
-            }
-            Ok(())
-        }
-    }
+    impl_ehal_i2c!(SingleMaster);
 
     impl Error for I2cMultiMasterErr {
         fn kind(&self) -> ErrorKind {
             match self {
-                I2cMultiMasterErr::GotNACK(0)       => ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address),
-                I2cMultiMasterErr::GotNACK(_)       => ErrorKind::NoAcknowledge(NoAcknowledgeSource::Data),
-                I2cMultiMasterErr::ArbitrationLost  => ErrorKind::ArbitrationLoss,
-                I2cMultiMasterErr::AddressedAsSlave => ErrorKind::ArbitrationLoss,
-                I2cMultiMasterErr::TriedAddressingSelf    => ErrorKind::Other,
+                I2cMultiMasterErr::GotNACK(0)           => ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address),
+                I2cMultiMasterErr::GotNACK(_)           => ErrorKind::NoAcknowledge(NoAcknowledgeSource::Data),
+                I2cMultiMasterErr::ArbitrationLost      => ErrorKind::ArbitrationLoss,
+                I2cMultiMasterErr::AddressedAsSlave     => ErrorKind::ArbitrationLoss,
+                I2cMultiMasterErr::TriedAddressingSelf  => ErrorKind::Other,
             }
         }
     }
+    impl<USCI: I2cUsci> ErrorType for I2cDevice<USCI, MultiMaster> {
+        type Error = I2cMultiMasterErr;
+    }
+    impl_ehal_i2c!(MultiMaster);
 }
 
 #[cfg(feature = "embedded-hal-02")]
 mod ehal02 {
-    use embedded_hal_02::blocking::i2c::{AddressMode as ehal02AddressMode, Read, Write, WriteRead};
+    use embedded_hal_02::blocking::i2c::{AddressMode, Read, Write, WriteRead};
     use super::*;
 
-    impl<USCI: I2cUsci, SevenOrTenBit> Read<SevenOrTenBit> for I2cDevice<USCI, SingleMaster>
-    where SevenOrTenBit: ehal02AddressMode + AddressType {
-        type Error = I2cSingleMasterErr;
+    macro_rules! impl_ehal02_i2c {
+        ($type: ty, $err_type: ty) => {
+            impl<USCI: I2cUsci, SevenOrTenBit> Read<SevenOrTenBit> for $type
+            where SevenOrTenBit: AddressMode + AddressType {
+                type Error = $err_type;
         fn read(&mut self, address: SevenOrTenBit, buffer: &mut [u8]) -> Result<(), Self::Error> {
             self.set_addressing_mode(SevenOrTenBit::addr_type());
             self.set_transmission_mode(TransmissionMode::Receive);
             self._read(address.into(), buffer, true, true)
         }
     }
-
-    impl<USCI: I2cUsci, SevenOrTenBit> Write<SevenOrTenBit> for I2cDevice<USCI, SingleMaster> 
-    where SevenOrTenBit: ehal02AddressMode + AddressType {
-        type Error = I2cSingleMasterErr;
+            impl<USCI: I2cUsci, SevenOrTenBit> Write<SevenOrTenBit> for $type 
+            where SevenOrTenBit: AddressMode + AddressType {
+                type Error = $err_type;
         fn write(&mut self, address: SevenOrTenBit, bytes: &[u8]) -> Result<(), Self::Error> {
             self.set_addressing_mode(SevenOrTenBit::addr_type());
             self.set_transmission_mode(TransmissionMode::Transmit);
             self._write(address.into(), bytes, true, true)
         }
     }
-
-    impl<USCI: I2cUsci, SevenOrTenBit> WriteRead<SevenOrTenBit> for I2cDevice<USCI, SingleMaster>  
-    where SevenOrTenBit: ehal02AddressMode + AddressType {
-        type Error = I2cSingleMasterErr;
+            impl<USCI: I2cUsci, SevenOrTenBit> WriteRead<SevenOrTenBit> for $type  
+            where SevenOrTenBit: AddressMode + AddressType {
+                type Error = $err_type;
         fn write_read(
             &mut self,
             address: SevenOrTenBit,
@@ -1215,5 +1224,10 @@ mod ehal02 {
             self.set_addressing_mode(SevenOrTenBit::addr_type());
             self._write_read(address.into(), bytes, buffer)
         }
+            }
+        };
     }
+
+    impl_ehal02_i2c!(I2cDevice<USCI, SingleMaster>, I2cSingleMasterErr);
+    impl_ehal02_i2c!(I2cDevice<USCI, MultiMaster>,  I2cMultiMasterErr);
 }
