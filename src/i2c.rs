@@ -2,36 +2,67 @@
 //!
 //! Peripherals eUSCI_B0 and eUSCI_B1 can be used for I2C communication.
 //!
-//! Begin by calling [`I2cConfig::new()`]. Once configured an [`I2cDevice`] will be returned.
+//! Begin by calling [`I2cConfig::new()`]. Depending on configuration, one of [`I2cSlave`], [`I2cSingleMaster`], 
+//! or [`I2cMultiMaster`] will be returned.
 //! 
-//! [`I2cDevice`] supports three different modes - Slave, Single Master (suitable for I2C buses with no other master devices), 
-//! and Multi-Master (suitable for buses with multiple masters, or when a device must act as both master and slave). 
+//! [`I2cSlave`] acts as a slave device on the bus. If the MSP430 is to be the only master on the bus then [`I2cSingleMaster`] 
+//! offers simplified error handling. If more than one master is on the bus then [`I2cMultiMaster`] should be used instead. 
+//! [`I2cMultiMaster`] can act as both a master and slave if a slave address is provided during configuration.
 //! 
-//! ## Slave Modes
-//! In slave mode the peripheral responds to requests from master devices. In slave and multi-master modes the 'own address' is 
-//! treated as 7-bit should a `u8` be provided, and 10-bit if a `u16` is provided. Both polling and interrupt-based methods are 
-//! available, though interrupt-based is recommended for slave devices, as the slave can 'fall behind' and lose information if 
-//! polling is not done frequently enough. Both methods use [`read_rx_buf()`](I2cDevice<Slave>::read_rx_buf()) and 
-//! [`write_tx_buf()`](I2cDevice<MultiMaster>::write_tx_buf()) to write and read from the bus. Interrupt-based implementations 
-//! rely on interrupts and [`interrupt_source()`](I2cDevice::interrupt_source()) to inform about events on the bus. 
-//! A polling-based implementation instead uses periodic calls to [`poll()`](I2cDevice<Slave>::poll()) to monitor for bus events.
+//! In all modes interrupts can be set and cleared using the `set_interrupts()` and `clear_interrupts()` methods alongside 
+//! [`I2cInterruptBits`], which provides a user-friendly way to set the register flags.
 //! 
-//! ## Master Modes
-//! Both Single Master and Multi-Master modes implement a blocking master implementation through the embedded-hal 
-//! [`I2c`](embedded_hal::i2c::I2c) trait. Passing a `u8` address to these methods uses 7-bit addressing, passing a `u16` uses 
-//! 10-bit addressing. Interrupt-based methods are also provided using the same [`read_rx_buf()`](I2cDevice<Slave>::read_rx_buf()), 
-//! [`write_tx_buf()`](I2cDevice<MultiMaster>::write_tx_buf()), and [`interrupt_source()`](I2cDevice::interrupt_source()) as above.
+//! ## [`I2cSlave`]
+//! In slave mode the peripheral responds to requests from master devices. The 'own address' is treated as 7-bit should a `u8` 
+//! be provided, and 10-bit if a `u16` is provided. 
+//! Both polling and interrupt-based methods are available, though interrupt-based is recommended for slave devices, as the slave 
+//! can 'fall behind' and lose information if polling is not done frequently enough. 
 //! 
-//! ### Single Master Mode
-//! Single master mode provides simplified error handling and ergonomics at the cost of being unsuitable for multi-master buses. 
-//! Single master mode does not handle bus arbitration, so even if the device is not expected to be addressed as a slave it is not
-//! suitable for use on an I2C bus with multiple masters.
+//! The interrupt-based interface relies on using [`interrupt_source()`](I2cSlave::interrupt_source()) to determine which event
+//! caused the interrupt. The polling-based implementation instead uses calls to [`poll()`](I2cSlave::poll()) to listen for events.
+//! In either case methods such as [`write_tx_buf()`](I2cSlave::write_tx_buf()) and 
+//! [`read_rx_buf()`](I2cSlave::read_rx_buf()) can be used to respond accordingly.
 //! 
-//! ### Multi-Master Mode
-//! Multi-Master mode handles both bus arbitration, and optionally being addressed as a slave device. 
-//! If the device is addressed as a slave the hardware automatically fails over into slave mode, and the slave transaction must 
-//! be concluded before the device is returned to master mode with [`return_to_master()`](`I2cDevice<MultiMaster>::return_to_master()`). 
-//! If the device merely loses arbitration [`return_to_master()`](`I2cDevice<MultiMaster>::return_to_master()`) may be called immediately.
+//! ## [`I2cSingleMaster`]
+//! Single master mode provides simplified error handling and ergonomics at the cost of being unsuitable for buses with more than one 
+//! master - single master mode does not handle bus arbitration, so even if the device is not expected to be addressed as a slave it is not
+//! suitable for use.
+//! 
+//! An easy-to-use blocking implementation is available through [`embedded_hal::i2c::I2c`], which provides methods for read, write, 
+//! write-read, and generic transactions. Additionally, slave detection is provided through [`I2cSingleMaster::is_slave_present()`].
+//! 
+//! A non-blocking or interrupt-based implementation is possible using [`I2cSingleMaster::send_start()`], 
+//! [`write_tx_buf()`](I2cSingleMaster::write_tx_buf), [`read_rx_buf()`](I2cSingleMaster::read_rx_buf), and 
+//! [`schedule_stop()`](I2cSingleMaster::schedule_stop).
+//! 
+//! ## [`I2cMultiMaster`]
+//! Multi-master mode is suitable for masters that belong to buses with more than one master ('Multi-master mode'), or for devices 
+//! that need to act as both a master and a slave ('Master-Slave mode'). These modes are discussed below.
+//! 
+//! ### Master-Slave mode
+//! When configured through [`I2cConfig::as_master_slave()`], [`I2cMultiMaster`] can act as either a master or slave device. 
+//! It broadly combines the functionality of [`I2cSlave`] and [`I2cSingleMaster`], providing a blocking master implementation via 
+//! [`embedded_hal::i2c::I2c`], and a non-blocking or interrupt-based interface via methods similar to [`I2cSingleMaster`]: 
+//! [`I2cMultiMaster::send_start()`], [`write_tx_buf_as_master()`](I2cMultiMaster::write_tx_buf_as_master), 
+//! [`read_rx_buf_as_master()`](I2cMultiMaster::read_rx_buf_as_master), and [`schedule_stop()`](I2cMultiMaster::schedule_stop). 
+//! 
+//! The MSP430 hardware automatically fails over from master to slave mode when arbitration is lost or the device is addressed as a slave, 
+//! so the master-related methods check for this before attempting master-related operations, returning an error if so. 
+//! The device can be restored to master mode via [`return_to_master()`](I2cMultiMaster::return_to_master). If arbitration is lost this 
+//! method may be called immediately, however if the device is addressed as a slave then this slave transaction must be resolved 
+//! before the device can be returned to master mode.
+//! 
+//! The slave interface is much the same as what is provided by [`I2cSlave`]: Bus events can be discovered using 
+//! [`interrupt_source()`](I2cMultiMaster::interrupt_source()) for an interrupt-based implementation, or [`poll()`](I2cMultiMaster::poll()) 
+//! for a polling-based one. [`write_tx_buf_as_slave()`](I2cMultiMaster::write_tx_buf_as_slave) and
+//! [`read_rx_buf_as_slave()`](I2cMultiMaster::read_rx_buf_as_slave) allow for writing to the Rx and Tx buffers. These methods don't have the 
+//! bus arbitration and slave addressing checks that the `_as_master` variants do, so these should only be called in slave mode.
+//! 
+//! ### Multi-master mode
+//! When configured through [`I2cConfig::as_multi_master()`], the address compare unit is disabled so the device can't be addressed as a slave.
+//! In this mode [`I2cMultiMaster`] acts similarly to [`I2cSingleMaster`], but with the addition of bus arbitration logic. Error variants 
+//! and methods related to slave actions can be safely ignored. 
+//! [`return_to_master()`](I2cMultiMaster::return_to_master) must still be called after losing arbitration.
 //! 
 //! Pins used:
 //!
@@ -74,12 +105,12 @@ impl From<AddressingMode> for bool {
     }
 }
 
-/// Configure between master receiver and master transmitter modes
+/// I2C transmission modes
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TransmissionMode {
-    /// master receiver mode
+    /// Receiver mode
     Receive = 0,
-    /// master transmitter mode
+    /// Transmitter mode
     Transmit = 1,
 }
 impl From<TransmissionMode> for bool {
@@ -431,30 +462,14 @@ macro_rules! i2c_common {
 
 macro_rules! i2c_masters {
     ($err_type: ty) => {
-        /// Set the address of the slave you want to talk to. Used as part of the non-blocking interface. 
-        /// If a `u8` address is provided then the peripheral is put into 7-bit addressing mode. 
-        /// A `u16` address puts the peripheral into 10-bit addressing mode. 
-        #[inline]
-        pub fn set_target_address<TenOrSevenBit: AddressType>(&mut self, address: TenOrSevenBit) {
-            self.set_addressing_mode(TenOrSevenBit::addr_type());
-            self.usci.i2csa_wr(address.into());
-        }
-
         #[inline(always)]
         fn set_addressing_mode(&mut self, mode: AddressingMode) {
             self.usci.set_ucsla10(mode.into())
         }
 
-        /// Manually set the transmission mode. Used as part of the non-blocking interface.
         #[inline(always)]
-        pub fn set_transmission_mode(&mut self, mode: TransmissionMode) {
+        fn set_transmission_mode(&mut self, mode: TransmissionMode) {
             self.usci.set_uctr(mode.into())
-        }
-
-        /// Manually send a start condition and address byte. Used as part of the non-blocking interface.
-        #[inline(always)]
-        pub fn send_start(&mut self) {
-            self.usci.transmit_start();
         }
 
         /// Manually schedule a stop condition to be sent. Used as part of the non-blocking interface.
@@ -469,7 +484,7 @@ macro_rules! i2c_masters {
         /// Checks whether a slave with the specified address is present on the I2C bus.
         /// Sends a zero-byte write and records whether the slave sends an ACK or not.
         /// 
-        /// A u8 address will use the 7-bit addressing mode, a u16 address uses 10-bit addressing.
+        /// A `u8` address will use the 7-bit addressing mode, a `u16` address uses 10-bit addressing.
         #[inline]
         pub fn is_slave_present<TenOrSevenBit>(&mut self, address: TenOrSevenBit) -> Result<bool, $err_type> 
         where TenOrSevenBit: AddressType {
@@ -479,7 +494,7 @@ macro_rules! i2c_masters {
             match self.blocking_write(address.into(), &[], true, true) {
                 Ok(_) => Ok(true),
                 Err(E::GotNACK(_)) => Ok(false),
-                #[allow(unreachable_patterns)] // I2cSingleMaster has only the GotNACK variant (for now)
+                #[allow(unreachable_patterns)] // I2cSingleMasterErr has only the GotNACK variant (for now)
                 Err(e) => Err(e),
             }
         }
@@ -490,6 +505,7 @@ macro_rules! i2c_masters {
             use $err_type as E;
             match err {
                 E::GotNACK(n) => E::GotNACK(n + bytes_already_sent),
+                #[allow(unreachable_patterns)] // I2cSingleMasterErr has only the GotNACK variant (for now)
                 e => e,
             }
         }
@@ -507,6 +523,13 @@ macro_rules! i2c_masters {
 
 macro_rules! i2c_slaves {
     () => {
+        /// Returns whether the device is currently in receive mode or transmit mode.
+        pub fn transmission_mode(&mut self) -> TransmissionMode {
+            match self.usci.is_transmitter() {
+                true  => TransmissionMode::Transmit,
+                false => TransmissionMode::Receive,
+            }
+        }
         /// Check the I2C bus flags for any events that should be dealt with. Returns `Err(WouldBlock)` if no events have occurred yet, otherwise `Ok(I2cEvent)`.
         pub fn poll(&mut self) -> nb::Result<I2cEvent, Infallible> {
             if self.usci.stop_received() {
@@ -538,6 +561,16 @@ pub struct I2cSingleMaster<USCI> {
 impl<USCI: I2cUsci> I2cSingleMaster<USCI> {
     i2c_common!();
     i2c_masters!(I2cSingleMasterErr);
+
+    /// Manually send a start condition and address byte. Used as part of the non-blocking interface.
+    /// Passing a `u8` address uses 7-bit addressing, a `u16` address uses 10-bit addressing.
+    #[inline(always)]
+    pub fn send_start<SevenOrTenBit: AddressType>(&mut self, address: SevenOrTenBit, mode: TransmissionMode) {
+        self.set_addressing_mode(SevenOrTenBit::addr_type());
+        self.set_transmission_mode(mode);
+        self.usci.i2csa_wr(address.into());
+        self.usci.transmit_start();
+    }
 
     /// Check if the Rx buffer is full, if so read it. Used as part of the non-blocking / interrupt-based interface.
     /// 
@@ -605,9 +638,26 @@ impl<USCI: I2cUsci> I2cMultiMaster<USCI> {
     i2c_masters!(I2cMultiMasterErr);
     i2c_slaves!();
 
+    /// Manually send a start condition and address byte. Used as part of the non-blocking interface.
+    /// Passing a `u8` address uses 7-bit addressing, a `u16` address uses 10-bit addressing.
+    #[inline(always)]
+    pub fn send_start<SevenOrTenBit: AddressType>(&mut self, address: SevenOrTenBit, mode: TransmissionMode) -> Result<(), I2cMultiMasterErr>{
+        if !self.usci.is_master() {
+            return match self.usci.ifg_rd().ucsttifg() {
+                false => Err(I2cMultiMasterErr::ArbitrationLost), // Lost arbitration
+                true  => Err(I2cMultiMasterErr::AddressedAsSlave),// Lost arbitration and the slave address was us
+            }
+        }
+        self.set_addressing_mode(SevenOrTenBit::addr_type());
+        self.set_transmission_mode(mode);
+        self.usci.i2csa_wr(address.into());
+        self.usci.transmit_start();
+        Ok(())
+    }
+
     /// Check if the Rx buffer is full, if so read it. Used as part of the non-blocking / interrupt-based interface.
     /// 
-    /// Returns `Err(WouldBlock)` if the buffer is still full, 
+    /// Returns `Err(WouldBlock)` if the buffer is empty, 
     /// `Err(Other(I2cMultiMasterErr))` if any bus conditions occur that would impede regular operation, or 
     /// `Ok(n)` if data was successfully retreived from the Rx buffer.  
     pub fn read_rx_buf_as_master(&mut self) -> nb::Result<u8, I2cMultiMasterErr> {
@@ -626,8 +676,7 @@ impl<USCI: I2cUsci> I2cMultiMaster<USCI> {
 
     /// Check if the Rx buffer is full, if so read it. Used as part of the non-blocking / interrupt-based interface.
     /// 
-    /// Returns `Err(WouldBlock)` if the buffer is still full, 
-    /// `Err(Other(I2cMultiMasterErr))` if any bus conditions occur that would impede regular operation, or 
+    /// Returns `Err(WouldBlock)` if the buffer is empty, or 
     /// `Ok(n)` if data was successfully retreived from the Rx buffer.  
     #[inline(always)]
     pub fn read_rx_buf_as_slave(&mut self) -> nb::Result<u8, Infallible> {
@@ -677,8 +726,7 @@ impl<USCI: I2cUsci> I2cMultiMaster<USCI> {
     /// Check if the Tx buffer is empty, if so write to it. Used as part of the non-blocking / interrupt-based interface.
     /// Does not check if the peripheral is in master mode.
     /// 
-    /// Returns `Err(WouldBlock)` if the buffer is still full, 
-    /// `Err(Other(I2cMultiMasterErr))` if any bus conditions occur that would impede regular operation, or 
+    /// Returns `Err(WouldBlock)` if the buffer is still full, or 
     /// `Ok(())` if data was successfully loaded into the Tx buffer.  
     #[inline(always)]
     pub fn write_tx_buf_as_slave(&mut self, byte: u8) -> nb::Result<(), Infallible>{
@@ -760,6 +808,18 @@ impl<USCI: I2cUsci> I2cMultiMaster<USCI> {
     #[inline(always)]
     pub fn return_to_master(&mut self) {
         self.usci.set_master();
+    }
+
+    /// Check whether the device is currently in master mode.
+    #[inline(always)]
+    pub fn is_master(&mut self) -> bool {
+        self.usci.is_master()
+    }
+
+    /// Check whether the device is currently being addressed as a slave.
+    #[inline(always)]
+    pub fn is_being_addressed(&mut self) -> bool {
+        !self.usci.is_master() && self.usci.ifg_rd().ucsttifg()
     }
 }
 
@@ -952,11 +1012,11 @@ pub enum I2cMultiMasterErr {
     GotNACK(usize),
     /// Another master on the bus talked over us, so the transaction was aborted. 
     /// The peripheral has been forced into slave mode. 
-    /// Call [`return_to_master()`](I2cDevice<MultiMaster>::return_to_master) to resume the master role.
+    /// Call [`return_to_master()`](I2cMultiMaster::return_to_master) to resume the master role.
     ArbitrationLost,
     /// Another master on the bus addressed us as a slave device. The peripheral has been forced into slave mode.
     /// The slave transaction *must* be completed before master operations can be resumed with
-    /// [`return_to_master()`](I2cDevice<MultiMaster>::return_to_master).
+    /// [`return_to_master()`](I2cMultiMaster::return_to_master).
     AddressedAsSlave,
     /// The eUSCI peripheral attempted to address itself. The hardware does not support this operation.
     TriedAddressingSelf,

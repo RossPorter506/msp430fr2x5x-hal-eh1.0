@@ -52,14 +52,12 @@ fn main() -> ! {
         .as_slave(SLAVE_ADDR)
         .configure(sl_scl, sl_sda);
 
-    i2c_master.set_target_address(SLAVE_ADDR);
     loop {
         // The master sends a byte then receives a byte. 
         // The slave echoes the master's byte back.
         
         // Master transmit
-        i2c_master.set_transmission_mode(TransmissionMode::Transmit);
-        i2c_master.send_start();
+        i2c_master.send_start(SLAVE_ADDR, TransmissionMode::Transmit);
         const ECHO_TX: u8 = 10; 
         nb::block!(i2c_master.write_tx_buf(ECHO_TX)).unwrap(); // Safe, slave doesn't send NACKs
 
@@ -70,8 +68,7 @@ fn main() -> ! {
         let byte = unsafe{ i2c_slave.read_rx_buf_unchecked() }; // Safe since `poll` returned a Write event
 
         // Master swaps mode
-        i2c_master.set_transmission_mode(TransmissionMode::Receive);
-        i2c_master.send_start();
+        i2c_master.send_start(SLAVE_ADDR, TransmissionMode::Receive);
 
         // Slave transmit
         loop {

@@ -2,11 +2,9 @@
 #![no_std]
 #![feature(abi_msp430_interrupt)]
 
-// Demonstrates a blocking master implementation, and a blocking and interrupt-based multi-master. 
-// The master sends a byte to the slave, then switches to read mode. The multi-master echoes the sent value back to the master.
-
-// The non-blocking master interface is lower-level than the blocking version (the embedded-hal `I2c` trait) 
-// and requires more careful usage.
+// Demonstrates a blocking multi-master implementation, and a blocking and interrupt-based master-slave. 
+// The master sends a byte to the master-slave, then switches to read mode. The master-slave echoes the sent value back to the master.
+// The master-slave then probes the bus looking for a device with address 0x09.
 
 // eUSCI B1 is configured as a master-slave. eUSCI B0 is configured as a master. Connect P1.2 to P4.6. Connect P1.3 to P4.7.
 

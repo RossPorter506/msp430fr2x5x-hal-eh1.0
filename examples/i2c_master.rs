@@ -1,6 +1,8 @@
 #![no_main]
 #![no_std]
 
+// An I2C master using the blocking interface.
+
 use embedded_hal::{delay::DelayNs, digital::{OutputPin, StatefulOutputPin}, i2c::{I2c, Operation}};
 use msp430_rt::entry;
 use msp430fr2x5x_hal::{
