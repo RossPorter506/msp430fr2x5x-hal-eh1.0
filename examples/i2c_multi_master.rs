@@ -8,14 +8,12 @@
 // The non-blocking master interface is lower-level than the blocking version (the embedded-hal `I2c` trait) 
 // and requires more careful usage.
 
-// eUSCI B1 is configured as the slave. eUSCI B0 is configured as the master. Connect P1.2 to P4.6. Connect P1.3 to P4.7.
-
-// TODO: Figure out what to do with write_buf and read_buf for multi-master. We can't just return 'hey you're a slave' if they're trying to be a slave.
+// eUSCI B1 is configured as a master-slave. eUSCI B0 is configured as a master. Connect P1.2 to P4.6. Connect P1.3 to P4.7.
 
 use core::cell::RefCell;
 
 use critical_section::Mutex;
-use embedded_hal::{delay::DelayNs, digital::{OutputPin, StatefulOutputPin}, i2c::I2c};
+use embedded_hal::{delay::DelayNs, digital::{OutputPin}, i2c::I2c};
 use msp430::interrupt::enable as enable_interrupts;
 use msp430_rt::{entry};
 use msp430fr2355::{interrupt, E_USCI_B1};
@@ -51,16 +49,20 @@ fn main() -> ! {
         .aclk_vloclk()
         .freeze(&mut fram);
 
-    let mut i2c_master = I2cConfig::new(periph.E_USCI_B0, GlitchFilter::Max50ns)
-    .as_multi_master::<u8>(None)
-    .use_smclk(&smclk, 80) // 8MHz / 80 = 100kHz
-    .configure(scl, sda);
-
+    // Configure an I2C device as both master and slave. The device will automatically failover from master to slave when addressed.
+    // Attempting any master actions will fail until the slave event has been handled.
     const MASTER_SLAVE_ADDR: u8 = 26;
     let mut i2c_master_slave = I2cConfig::new(periph.E_USCI_B1, GlitchFilter::Max50ns)
-        .as_multi_master(Some(MASTER_SLAVE_ADDR))
+        .as_master_slave(MASTER_SLAVE_ADDR)
         .use_smclk(&smclk, 80) // 8MHz / 80 = 100kHz
         .configure(mm_scl, mm_sda);
+
+    // Make another I2C device to test the master-slave. Since there are now two masters present
+    // on the bus this has to be a multi-master, rather than a single-master.
+    let mut i2c_master = I2cConfig::new(periph.E_USCI_B0, GlitchFilter::Max50ns)
+        .as_multi_master() 
+        .use_smclk(&smclk, 80) // 8MHz / 80 = 100kHz
+        .configure(scl, sda);
 
     critical_section::with(|cs| {
         i2c_master_slave.set_interrupts(I2cInterruptBits::StartReceived);
@@ -73,22 +75,24 @@ fn main() -> ! {
         // The multi-master echoes the master's byte back.
         let mut echo_rx = [0; 1];
         const ECHO_TX: [u8;1] = [128; 1];
-        // Start a transaction with the multi-master. This will force the multi-master into slave mode.
-        // We don't care about errors for this example, but should be handled in a real scenario.
+
+        // Start a transaction using the master. This will force the master-slave into slave mode.
+        // We don't care about errors for this example, but should be handled in a real implementation.
+        // Because this device was configured with the address comparison unit disabled the errors related to slave events can be ignored.
         let _ = i2c_master.write_read(MASTER_SLAVE_ADDR, &ECHO_TX, &mut echo_rx);
 
         // The multi-master is set back into master mode in the StopReceived interrupt, so now we can just use it like a master.
-        // Here we send a zero-byte write to check if a device with address 0x10 is on the bus
+        // Here we send a zero-byte write to check if a device with address 0x9 is on the bus
         critical_section::with(|cs| {
-            let Some(ref mut i2c_multi_master) = *I2C_MULTI_MASTER.borrow_ref_mut(cs) else {return};
-            if let Ok(false) = i2c_multi_master.is_slave_present(9u8) {
-                green_led.set_high().ok(); // Turn on the green LED if address 9 is not on bus
+            let Some(ref mut i2c_master_slave) = *I2C_MULTI_MASTER.borrow_ref_mut(cs) else {return};
+            if let Ok(false) = i2c_master_slave.is_slave_present(9u8) {
+                green_led.set_high().ok(); // Turn on the green LED if address 0x9 is not on bus
             }
         });
 
         // If the I2C devices echoed correctly set the red LED
         red_led.set_state((echo_rx == ECHO_TX).into()).ok();
-        delay.delay_ms(1);
+        delay.delay_ms(100);
     }
 }
 
@@ -98,26 +102,26 @@ fn main() -> ! {
 fn EUSCI_B1() {
     static mut TEMP_VAR: u8 = 0;
     critical_section::with(|cs| {
-        let Some(ref mut i2c_multi_master) = *I2C_MULTI_MASTER.borrow_ref_mut(cs) else {return};
-        match i2c_multi_master.interrupt_source() {
+        let Some(ref mut i2c_master_slave) = *I2C_MULTI_MASTER.borrow_ref_mut(cs) else {return};
+        match i2c_master_slave.interrupt_source() {
             I2cVector::StartReceived => {
-                // Enable Rx, Tx and Stop interrupts.
+                // We have been addressed as a slave. Enable Rx, Tx and Stop interrupts.
                 use I2cInterruptBits::*;
-                i2c_multi_master.set_interrupts(TxBufEmpty + RxBufFull + StopReceived);
+                i2c_master_slave.set_interrupts(TxBufEmpty + RxBufFull + StopReceived);
             },
             I2cVector::RxBufFull => {
                 // Store the received value so we can echo it back later when the master switches to read mode
-                *TEMP_VAR = unsafe{ i2c_multi_master.read_rx_buf_as_slave_unchecked() };
+                *TEMP_VAR = unsafe{ i2c_master_slave.read_rx_buf_as_slave_unchecked() };
             },
             I2cVector::TxBufEmpty => {
                 // Echo back the stored value
-                unsafe{ i2c_multi_master.write_tx_buf_as_slave_unchecked(*TEMP_VAR) };
+                unsafe{ i2c_master_slave.write_tx_buf_as_slave_unchecked(*TEMP_VAR) };
             },
             I2cVector::StopReceived => {
-                // Disable Rx, Tx, and Stop interrupts. We don't want these to trigger when the multi-master acts as a blocking master.
+                // Slave addressing concluded. Disable Rx, Tx, and Stop interrupts. We don't want these to trigger when acting as a master.
                 use I2cInterruptBits::*;
-                i2c_multi_master.clear_interrupts(TxBufEmpty + RxBufFull + StopReceived);
-                i2c_multi_master.return_to_master();
+                i2c_master_slave.clear_interrupts(TxBufEmpty + RxBufFull + StopReceived);
+                i2c_master_slave.return_to_master();
             },
             _ => unreachable!(),
         }

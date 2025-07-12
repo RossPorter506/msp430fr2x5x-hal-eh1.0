@@ -246,8 +246,22 @@ impl<USCI: I2cUsci> I2cConfig<USCI, NoClockSet, NoRoleSet> {
     }
 
     /// Configure this EUSCI peripheral as an I2C master on a bus with other master devices. 
-    /// These masters may contest the bus and/or address this device as a slave if an address is provided.
-    pub fn as_multi_master<TenOrSevenBit>(mut self, own_address: Option<TenOrSevenBit>) -> I2cConfig<USCI, NoClockSet, MultiMaster> 
+    /// 
+    /// The address comparison unit is disabled so this device can't be addressed as a slave, 
+    /// though the other masters may still contest the bus. 
+    pub fn as_multi_master(mut self) -> I2cConfig<USCI, NoClockSet, MultiMaster> {
+        self.ctlw0 = UcbCtlw0 { 
+            ucmst: true, 
+            ucmm: true,
+            ..self.ctlw0
+        };
+
+        return_self_config!(self)
+    }
+
+    /// Configure this EUSCI peripheral as an I2C master-slave on a bus with other master devices. 
+    /// The other masters may contest the bus and/or address this device as a slave.
+    pub fn as_master_slave<TenOrSevenBit>(mut self, own_address: TenOrSevenBit) -> I2cConfig<USCI, NoClockSet, MultiMaster> 
     where TenOrSevenBit: AddressType {
         self.ctlw0 = UcbCtlw0 { 
             uca10: TenOrSevenBit::addr_type().into(), 
@@ -256,16 +270,13 @@ impl<USCI: I2cUsci> I2cConfig<USCI, NoClockSet, NoRoleSet> {
             ..self.ctlw0
         };
 
-        // Enable address checking only if address provided
         // Note: If you add support for the other 3 own addresses (or the mask) you will also have to upgrade the logic for checking 
         // that the peripheral isn't addressing itself, i.e. I2cMultiMasterErr::TriedAddressingSelf
-        if let Some(addr) = own_address {
-            self.i2coa0 = UcbI2coa {
-                ucgcen: false, // Not yet implemented
-                ucoaen: true,
-                i2coa0: addr.into(),
-            };
-        }
+        self.i2coa0 = UcbI2coa {
+            ucgcen: false, // Not yet implemented
+            ucoaen: true,
+            i2coa0: own_address.into(),
+        };
 
         return_self_config!(self)
     }
