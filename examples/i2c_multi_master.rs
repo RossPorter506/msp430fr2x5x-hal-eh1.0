@@ -52,19 +52,19 @@ fn main() -> ! {
         .freeze(&mut fram);
 
     let mut i2c_master = I2cConfig::new(periph.E_USCI_B0, GlitchFilter::Max50ns)
-    .as_single_master()
+    .as_multi_master::<u8>(None)
     .use_smclk(&smclk, 80) // 8MHz / 80 = 100kHz
     .configure(scl, sda);
 
-    const MULTI_MASTER_ADDR: u8 = 0x1A;
-    let mut i2c_multi_master = I2cConfig::new(periph.E_USCI_B1, GlitchFilter::Max50ns)
-        .as_multi_master(Some(MULTI_MASTER_ADDR))
+    const MASTER_SLAVE_ADDR: u8 = 26;
+    let mut i2c_master_slave = I2cConfig::new(periph.E_USCI_B1, GlitchFilter::Max50ns)
+        .as_multi_master(Some(MASTER_SLAVE_ADDR))
         .use_smclk(&smclk, 80) // 8MHz / 80 = 100kHz
         .configure(mm_scl, mm_sda);
 
     critical_section::with(|cs| {
-        i2c_multi_master.set_interrupts(I2cInterruptBits::StartReceived);
-        I2C_MULTI_MASTER.borrow_ref_mut(cs).replace(i2c_multi_master);
+        i2c_master_slave.set_interrupts(I2cInterruptBits::StartReceived);
+        I2C_MULTI_MASTER.borrow_ref_mut(cs).replace(i2c_master_slave);
     });
     unsafe { enable_interrupts() };
 
@@ -74,23 +74,21 @@ fn main() -> ! {
         let mut echo_rx = [0; 1];
         const ECHO_TX: [u8;1] = [128; 1];
         // Start a transaction with the multi-master. This will force the multi-master into slave mode.
-        i2c_master.write_read(MULTI_MASTER_ADDR, &ECHO_TX, &mut echo_rx).unwrap(); // Safe, our slave never NACKs
+        // We don't care about errors for this example, but should be handled in a real scenario.
+        let _ = i2c_master.write_read(MASTER_SLAVE_ADDR, &ECHO_TX, &mut echo_rx);
 
         // The multi-master is set back into master mode in the StopReceived interrupt, so now we can just use it like a master.
         // Here we send a zero-byte write to check if a device with address 0x10 is on the bus
         critical_section::with(|cs| {
             let Some(ref mut i2c_multi_master) = *I2C_MULTI_MASTER.borrow_ref_mut(cs) else {return};
-            match i2c_multi_master.is_slave_present(0x10_u8) {
-                Ok(true) => green_led.set_high().ok(),
-                // In this case we know the other master can't be addressing or contesting the bus, 
-                // but in reality these conditions should (and should) be handled here
-                _ => green_led.set_low().ok(),
-            };
+            if let Ok(false) = i2c_multi_master.is_slave_present(9u8) {
+                green_led.set_high().ok(); // Turn on the green LED if address 9 is not on bus
+            }
         });
 
         // If the I2C devices echoed correctly set the red LED
-        red_led.set_state((ECHO_TX[0] == echo_rx[0]).into()).ok();
-        delay.delay_ms(100);
+        red_led.set_state((echo_rx == ECHO_TX).into()).ok();
+        delay.delay_ms(1);
     }
 }
 
