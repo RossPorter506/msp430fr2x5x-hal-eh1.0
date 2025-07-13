@@ -931,17 +931,32 @@ impl<USCI: I2cUsci> I2cSlave<USCI> {
 
 type HandleErrorFn<USCI, E> = fn(&mut USCI, &<USCI as EUsciI2C>::IfgOut, usize) -> Result<(), E>;
 
+fn zero_byte_write<USCI: I2cUsci, E>(
+    usci: &mut USCI, 
+    address: u16, 
+    handle_errs: HandleErrorFn<USCI, E>) -> Result<(), E> {
+    
+    usci.ifg_rst();
+    usci.i2csa_wr(address);
+    usci.transmit_start();
+    usci.transmit_stop();
+    usci.uctxbuf_wr(0); // Bus stalls if nothing in Tx, even if a stop is scheduled
+    while usci.uctxstt_rd() || usci.uctxstp_rd() {
+        handle_errs(usci, &usci.ifg_rd(), 0)?;
+    }
+    handle_errs(usci, &usci.ifg_rd(), 0)?;
+    Ok(())
+}
 fn blocking_write_base<USCI: I2cUsci, E>(
     usci: &mut USCI, 
     address: u16, 
     bytes: &[u8], 
-    mut send_start: bool,
-    mut send_stop: bool, 
+    send_start: bool,
+    send_stop: bool, 
     handle_errs: HandleErrorFn<USCI, E>) -> Result<(), E> {
     // The only way to perform a zero byte write is with a start + stop
     if bytes.is_empty() {
-        send_start = true;
-        send_stop = true;
+        return zero_byte_write(usci, address, handle_errs);
     }
 
     // Clear any flags from previous transactions
@@ -963,7 +978,7 @@ fn blocking_write_base<USCI: I2cUsci, E>(
         usci.uctxbuf_wr(byte);
     } 
     while !usci.ifg_rd().uctxifg0() {
-        asm::nop();
+        handle_errs(usci, &usci.ifg_rd(), bytes.len())?;
     }
 
     if send_stop {
