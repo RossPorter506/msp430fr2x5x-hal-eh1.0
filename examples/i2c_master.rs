@@ -1,6 +1,8 @@
 #![no_main]
 #![no_std]
 
+// An I2C master using the blocking interface.
+
 use embedded_hal::{delay::DelayNs, digital::{OutputPin, StatefulOutputPin}, i2c::{I2c, Operation}};
 use msp430_rt::entry;
 use msp430fr2x5x_hal::{
@@ -30,6 +32,7 @@ fn main() -> ! {
         .freeze(&mut fram);
 
     let mut i2c = I2cConfig::new(periph.E_USCI_B1, GlitchFilter::Max50ns)
+        .as_single_master()
         .use_smclk(&smclk, 80) // 8MHz / 80 = 100kHz
         .configure(scl, sda);
     
@@ -38,16 +41,17 @@ fn main() -> ! {
         // 7- and 10-bit addressing modes are controlled by passing the address as either a u8 or a u16.
         
         let mut is_ok = true;
+        let send_buf = [(1<<7) + (0b01 << 5), 0b11];
 
         // Check if anything with this address is present on the bus by 
         // sending a zero-byte write and listening for an ACK.
-        if !i2c.is_slave_present(0x29_u8) {
+        if i2c.is_slave_present(0x12_u8).is_ok_and(|is_true| is_true) {
             is_ok = false;
         }
         
         // Blocking write. Write two bytes (length of buffer) to address 0x12.
         // If a NACK is recieved the transmission is aborted.
-        let wr_res = i2c.write(0x12_u8, &[(1<<7) + (0b01 << 5), 0b11]);
+        let wr_res = i2c.write(0x12_u8, &send_buf);
         if wr_res.is_err() {
             is_ok = false;
         }
@@ -63,7 +67,7 @@ fn main() -> ! {
         // Do a write then a read within one transaction.
         // Commonly used to read a specific register from the slave.
         // There is no 'stop' between the write and read, only a repeated start.
-        let wr_rd_res = i2c.write_read(0x12_u8, &[(1<<7) + (0b01 << 5), 0b11], &mut recv);
+        let wr_rd_res = i2c.write_read(0x12_u8, &send_buf, &mut recv);
         if wr_rd_res.is_err() {
             is_ok = false;
         }
@@ -72,7 +76,7 @@ fn main() -> ! {
         // start between operations of dissimilar types, and a stop at the end.
         // This particular example is equivalent to the write_read call above.
         let tr_res = i2c.transaction(0x12_u8, &mut [
-            Operation::Write(&[(1<<7) + (0b01 << 5), 0b11]), 
+            Operation::Write(&send_buf), 
             Operation::Read(&mut recv)
         ]);
         if tr_res.is_err() {
