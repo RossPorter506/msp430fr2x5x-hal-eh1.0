@@ -371,8 +371,9 @@ pub struct I2cBus<USCI: I2cUsci>{usci: USCI}
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub enum I2CErr {
-    /// Address was never acknolwedged by slave
-    GotNACK,
+    /// Received a NACK. The contained value denotes the byte where the NACK occurred. 
+    /// Byte 0 is the address byte, byte 1 is the first data byte, etc.
+    GotNACK(usize),
     // Other errors such as 'arbitration lost' and the 'clock low timeout' UCCLTOIFG may appear here in future.
 }
 
@@ -421,7 +422,7 @@ impl<USCI: I2cUsci> I2cBus<USCI> {
                     while usci.uctxstp_rd() {
                         asm::nop();
                     }
-                    return Err::<(), I2CErr>(I2CErr::GotNACK);
+                    return Err::<(), I2CErr>(I2CErr::GotNACK(idx));
                 }
                 // If byte recieved
                 if ifg.ucrxifg0() {
@@ -464,7 +465,7 @@ impl<USCI: I2cUsci> I2cBus<USCI> {
             asm::nop();
         }
 
-        for &byte in bytes {
+        for (idx, &byte) in bytes.iter().enumerate() {
             usci.uctxbuf_wr(byte);
             loop {
                 if usci.ifg_rd().ucnackifg() {
@@ -472,7 +473,7 @@ impl<USCI: I2cUsci> I2cBus<USCI> {
                     while usci.uctxstp_rd() {
                         asm::nop();
                     }
-                    return Err(I2CErr::GotNACK);
+                    return Err(I2CErr::GotNACK(idx));
                 }
                 if usci.ifg_rd().uctxifg0() {
                     break;
@@ -485,7 +486,7 @@ impl<USCI: I2cUsci> I2cBus<USCI> {
             while usci.uctxstp_rd() {
                 // This is mainly for catching NACKs in a zero-byte write
                 if usci.ifg_rd().ucnackifg() {
-                    return Err(I2CErr::GotNACK);
+                    return Err(I2CErr::GotNACK(bytes.len()));
                 }
             }
         }
@@ -504,8 +505,7 @@ impl<USCI: I2cUsci> I2cBus<USCI> {
         self.set_transmission_mode(TransmissionMode::Transmit);
         match self.write(address.into(), &[], true, true) {
             Ok(_) => true,
-            Err(I2CErr::GotNACK) => false,
-            //Err(e) => Err(e),
+            Err(I2CErr::GotNACK(_)) => false,
         }
     }
 
@@ -515,6 +515,7 @@ impl<USCI: I2cUsci> I2cBus<USCI> {
         self.write(address, bytes, true, false)?;
         self.set_transmission_mode(TransmissionMode::Receive);
         self.read(address, buffer, true, true)
+            .map_err(|e| add_nack_count(e, bytes.len()))
     }
 }
 
@@ -545,7 +546,8 @@ mod ehal1 {
     impl Error for I2CErr {
         fn kind(&self) -> ErrorKind {
             match self {
-                I2CErr::GotNACK => ErrorKind::NoAcknowledge(NoAcknowledgeSource::Unknown),
+                I2CErr::GotNACK(0)       => ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address),
+                I2CErr::GotNACK(_)       => ErrorKind::NoAcknowledge(NoAcknowledgeSource::Data),
             }
         }
     }
@@ -560,6 +562,7 @@ mod ehal1 {
             self.set_addressing_mode(TenOrSevenBit::addr_type());
             
             let mut prev_discr = None;
+            let mut bytes_sent = 0;
             let len = ops.len();
             for (i, op) in ops.iter_mut().enumerate() {
                 // Send a start if this is the first operation, 
@@ -574,17 +577,29 @@ mod ehal1 {
                 match op {
                     Operation::Read(ref mut items) => {
                         self.set_transmission_mode(TransmissionMode::Receive);
-                        self.read(address.into(), items, send_start, send_stop)?;
+                        self.read(address.into(), items, send_start, send_stop)
+                            .map_err(|e| add_nack_count(e, bytes_sent))?;
+                        bytes_sent += items.len();
                     }
                     Operation::Write(items) => {
                         self.set_transmission_mode(TransmissionMode::Transmit);
-                        self.write(address.into(), items, send_start, send_stop)?;
+                        self.write(address.into(), items, send_start, send_stop)
+                            .map_err(|e| add_nack_count(e, bytes_sent))?;
+                        bytes_sent += items.len();
                     }
                 }
                 prev_discr = Some(core::mem::discriminant(op));
             }
             Ok(())
         }
+    }
+}
+
+/// In multi-operation transactions update the NACK byte error count to match *total* bytes sent 
+fn add_nack_count(err: I2CErr, bytes_already_sent: usize) -> I2CErr {
+    match err {
+        I2CErr::GotNACK(n) => I2CErr::GotNACK(n + bytes_already_sent),
+        e => e,
     }
 }
 
