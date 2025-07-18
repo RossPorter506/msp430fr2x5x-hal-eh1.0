@@ -19,7 +19,7 @@ use embedded_hal::spi::{SpiBus, MODE_0};
 use embedded_hal::delay::DelayNs;
 use msp430_rt::entry;
 use msp430fr2355::{interrupt, E_USCI_A0};
-use msp430fr2x5x_hal::spi::{SpiConfig, SpiReadErr, SpiSlave, StePolarity};
+use msp430fr2x5x_hal::spi::{SpiConfig, SpiErr, SpiSlave, StePolarity};
 use msp430fr2x5x_hal::{
     clock::{ClockConfig, DcoclkFreqSel, MclkDiv, SmclkDiv}, fram::Fram, gpio::Batch, pmm::Pmm, watchdog::Wdt
 };
@@ -108,7 +108,7 @@ fn EUSCI_A0() {
         // If you have multiple interrupts enabled you can use .interrupt_source() to determine which one caused this interrupt
         let byte = match unsafe{spi_slave.read_unchecked()} {
             Ok(b) => b,
-            Err(SpiReadErr::Overrun(b)) => b,
+            Err(SpiErr::Overrun(b)) => b,
         };
         spi_slave.write(byte.wrapping_add(1));
     });

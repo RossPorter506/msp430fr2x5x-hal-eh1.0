@@ -23,7 +23,7 @@
 //! eUSCI_B1: {MISO: `P4.7`, MOSI: `P4.6`, SCLK: `P4.5`}.
 use crate::{
     clock::{Aclk, Smclk}, 
-    gpio::{Alternate1, Pin, Pin0, Pin1, Pin2, Pin3, Pin4, Pin5, Pin6, Pin7, P1, P4}, 
+    gpio::{Alternate1, Input, Pin, Pin0, Pin1, Pin2, Pin3, Pin4, Pin5, Pin6, Pin7, PinNum, P1, P4}, 
     hw_traits::eusci::{EusciSPI, Ucmode, Ucssel, UcxSpiCtw0},
 };
 use core::marker::PhantomData;
@@ -41,7 +41,11 @@ pub trait SpiUsci: EusciSPI {
     /// Serial Clock
     type SCLK;
     /// Slave Transmit Enable (acts like CS)
-    type STE;
+    #[allow(private_bounds)]
+    type STE: Read;
+}
+trait Read {
+    fn read(&mut self) -> bool;
 }
 
 impl SpiUsci for pac::E_USCI_A0 {
@@ -84,6 +88,23 @@ macro_rules! impl_spi_pin {
     };
 }
 
+macro_rules! impl_spi_ste_pin {
+    ($struct_name: ident, $port: ty, $pin: ty) => {
+        impl<PULL> From<Pin<$port, $pin, Alternate1<Input<PULL>>>> for $struct_name {
+            #[inline(always)]
+            fn from(_val: Pin<$port, $pin, Alternate1<Input<PULL>>>) -> Self {
+                $struct_name
+            }
+        }
+        impl Read for $struct_name {
+            fn read(&mut self) -> bool {
+                use crate::util::BitsExt;
+                unsafe { (<$port>::PTR as *const u8).read_volatile() }.check(<$pin>::NUM) > 0
+            }
+        }
+    };
+}
+
 /// SPI MISO pin for eUSCI A0
 pub struct UsciA0MISOPin;
 impl_spi_pin!(UsciA0MISOPin, P1, Pin6);
@@ -98,7 +119,7 @@ impl_spi_pin!(UsciA0SCLKPin, P1, Pin5);
 
 /// SPI STE pin for eUSCI A0
 pub struct UsciA0STEPin;
-impl_spi_pin!(UsciA0STEPin, P1, Pin4);
+impl_spi_ste_pin!(UsciA0STEPin, P1, Pin4);
 
 /// SPI MISO pin for eUSCI A1
 pub struct UsciA1MISOPin;
@@ -113,7 +134,7 @@ pub struct UsciA1SCLKPin;
 impl_spi_pin!(UsciA1SCLKPin, P4, Pin1);
 /// SPI STE pin for eUSCI A1
 pub struct UsciA1STEPin;
-impl_spi_pin!(UsciA1STEPin, P4, Pin0);
+impl_spi_ste_pin!(UsciA1STEPin, P4, Pin0);
 
 /// SPI MISO pin for eUSCI B0
 pub struct UsciB0MISOPin;
@@ -129,7 +150,7 @@ impl_spi_pin!(UsciB0SCLKPin, P1, Pin1);
 
 /// SPI STE pin for eUSCI B0
 pub struct UsciB0STEPin;
-impl_spi_pin!(UsciB0STEPin, P1, Pin0);
+impl_spi_ste_pin!(UsciB0STEPin, P1, Pin0);
 
 /// SPI MISO pin for eUSCI B1
 pub struct UsciB1MISOPin;
@@ -145,7 +166,7 @@ impl_spi_pin!(UsciB1SCLKPin, P4, Pin5);
 
 /// SPI STE pin for eUSCI B1
 pub struct UsciB1STEPin;
-impl_spi_pin!(UsciB1STEPin, P4, Pin4);
+impl_spi_ste_pin!(UsciB1STEPin, P4, Pin4);
 
 /// Configuration object for an eUSCI peripheral being set up for SPI mode.
 pub struct SpiConfig<USCI: SpiUsci, ROLE>{
@@ -305,12 +326,12 @@ impl<USCI: SpiUsci> SpiSlave<USCI> {
 
     /// Read the byte in the Rx buffer, waiting if necessary.
     #[inline]
-    pub fn read(&mut self) -> Result<u8, SpiReadErr> {
+    pub fn read(&mut self) -> Result<u8, SpiErr> {
         while !self.0.receive_flag() {
             msp430::asm::nop();
         }
         if self.0.overrun_flag() {
-            return Err(SpiReadErr::Overrun(self.0.rxbuf_rd()));
+            return Err(SpiErr::Overrun(self.0.rxbuf_rd()));
         }
         Ok(self.0.rxbuf_rd())
     }
@@ -320,9 +341,9 @@ impl<USCI: SpiUsci> SpiSlave<USCI> {
     /// # Safety
     /// May read invalid data if RXIFG bit is not ready.
     #[inline]
-    pub unsafe fn read_unchecked(&mut self) -> Result<u8, SpiReadErr> {
+    pub unsafe fn read_unchecked(&mut self) -> Result<u8, SpiErr> {
         if self.0.overrun_flag() {
-            return Err(SpiReadErr::Overrun(self.0.rxbuf_rd()));
+            return Err(SpiErr::Overrun(self.0.rxbuf_rd()));
         }
         Ok(self.0.rxbuf_rd())
     }
@@ -420,7 +441,8 @@ impl<USCI: SpiUsci> Spi<USCI> {
     }
 
     #[inline(always)]
-    /// Change the SPI mode
+    /// Change the SPI mode. Note that this requires putting the eUSCI peripheral into reset,
+    /// which clears interrupts and flags.
     pub fn change_mode(&mut self, mode: Mode) {
         let usci = unsafe { USCI::steal() };
         usci.ctw0_set_rst();
@@ -446,9 +468,105 @@ impl<USCI: SpiUsci> Spi<USCI> {
     fn send_byte(&mut self, word: u8) -> nb::Result<(), SpiErr> {
         let usci = unsafe { USCI::steal() };
         if usci.transmit_flag() {
-            if usci.framing_flag() {
-                return Err(nb::Error::Other(SpiErr::BusConflict));
+            usci.txbuf_wr(word);
+            Ok(())
+        } else {
+            Err(WouldBlock)
+        }
+    }
+}
+
+/// An SPI peripheral configured into multi-master mode.
+pub struct SpiMultiMaster<USCI: SpiUsci> {
+    usci: USCI,
+    ste: USCI::STE,
+}
+impl<USCI: SpiUsci> SpiMultiMaster<USCI> {
+    /// Enable Rx interrupts, which fire when a byte is ready to be read
+    #[inline(always)]
+    pub fn set_rx_interrupt(&mut self) {
+        let usci = unsafe { USCI::steal() };
+        usci.set_receive_interrupt();
+    }
+
+    /// Disable Rx interrupts, which fire when a byte is ready to be read
+    #[inline(always)]
+    pub fn clear_rx_interrupt(&mut self) {
+        let usci = unsafe { USCI::steal() };
+        usci.clear_receive_interrupt();
+    }
+
+    /// Enable Tx interrupts, which fire when the transmit buffer is empty
+    #[inline(always)]
+    pub fn set_tx_interrupt(&mut self) {
+        let usci = unsafe { USCI::steal() };
+        usci.set_transmit_interrupt();
+    }
+
+    /// Disable Tx interrupts, which fire when the transmit buffer is empty
+    #[inline(always)]
+    pub fn clear_tx_interrupt(&mut self) {
+        let usci = unsafe { USCI::steal() };
+        usci.clear_transmit_interrupt();
+    }
+
+    /// Writes raw value to Tx buffer with no checks for validity
+    /// # Safety
+    /// May clobber unsent data still in the buffer
+    #[inline(always)]
+    pub unsafe fn write_unchecked(&mut self, val: u8) {
+        let usci = unsafe { USCI::steal() };
+        usci.txbuf_wr(val)
+    }
+
+    #[inline(always)]
+    /// Reads a raw value from the Rx buffer with no checks for validity
+    /// # Safety
+    /// May read duplicate data
+    pub unsafe fn read_unchecked(&mut self) -> u8 {
+        let usci = unsafe { USCI::steal() };
+        usci.rxbuf_rd()
+    }
+
+    #[inline(always)]
+    /// Change the SPI mode. Note that this requires putting the eUSCI peripheral into reset,
+    /// which clears interrupts and flags.
+    pub fn change_mode(&mut self, mode: Mode) {
+        let usci = unsafe { USCI::steal() };
+        usci.ctw0_set_rst();
+        usci.set_spi_mode(mode);
+        usci.ctw0_clear_rst();
+    }
+
+    fn recv_byte(&mut self) -> nb::Result<u8, SpiMultiErr> {
+        let usci = unsafe { USCI::steal() };
+        
+        if usci.receive_flag() {
+            if usci.overrun_flag() {
+                Err(nb::Error::Other(SpiMultiErr::Overrun(usci.rxbuf_rd())))
             }
+            else {
+                Ok(usci.rxbuf_rd())
+            }
+        } else {
+            Err(WouldBlock)
+        }
+    }
+
+    fn send_byte(&mut self, word: u8) -> nb::Result<(), SpiMultiErr> {
+        let usci = unsafe { USCI::steal() };
+        if usci.framing_flag() {
+            // TODO: Clear flag
+            return Err(nb::Error::Other(SpiMultiErr::BusConflict));
+        }
+        // Due to USCI50, it's not enough to check for UCFE, which only triggers if STE activates during a transmission
+        // We also have to check whether STE is active before we begin an SPI transaction, otherwise deadlock!
+        // Note there is the small possibility of a time-of-check vs time-of-use  error here, as STE may activate after we check
+        // but before we send the packet.
+        if self.ste.read() ^ self.usci.ste_active_low() {
+            return Err(nb::Error::Other(SpiMultiErr::BusConflict));
+        }
+        if usci.transmit_flag() {
             usci.txbuf_wr(word);
             Ok(())
         } else {
@@ -461,7 +579,7 @@ impl<USCI: SpiUsci> Spi<USCI> {
 /// SPI transmit/receive errors
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
-pub enum SpiErr {
+pub enum SpiMultiErr {
     /// Data in the recieve buffer was overwritten before it was read. The contained data is the new contents of the recieve buffer.
     Overrun(u8),
     /// Another master interrupted our previous transaction using the STE pin. Only occurs in 4-pin master mode.
@@ -471,14 +589,14 @@ pub enum SpiErr {
 // ...But for the SpiSlave we can separate them to make error handling easier.
 /// SPI receive errors
 #[derive(Clone, Copy, Debug)]
-pub enum SpiReadErr {
+pub enum SpiErr {
     /// Data in the recieve buffer was overwritten before it was read. The contained data is the new contents of the recieve buffer.
     Overrun(u8),
 }
-impl From<SpiReadErr> for SpiErr {
-    fn from(err: SpiReadErr) -> Self {
+impl From<SpiErr> for SpiMultiErr {
+    fn from(err: SpiErr) -> Self {
         match err {
-            SpiReadErr::Overrun(byte) => SpiErr::Overrun(byte),
+            SpiErr::Overrun(byte) => SpiMultiErr::Overrun(byte),
         }
     }
 }
@@ -488,11 +606,18 @@ mod ehal1 {
     use nb::block;
     use super::*;
 
+    impl Error for SpiMultiErr {
+        fn kind(&self) -> embedded_hal::spi::ErrorKind {
+            match self {
+                SpiMultiErr::Overrun(_) => embedded_hal::spi::ErrorKind::Overrun,
+                SpiMultiErr::BusConflict => embedded_hal::spi::ErrorKind::ModeFault,
+            }
+        }
+    }
     impl Error for SpiErr {
         fn kind(&self) -> embedded_hal::spi::ErrorKind {
             match self {
                 SpiErr::Overrun(_) => embedded_hal::spi::ErrorKind::Overrun,
-                SpiErr::BusConflict => embedded_hal::spi::ErrorKind::ModeFault,
             }
         }
     }
@@ -577,9 +702,9 @@ mod ehal1 {
             // it seems to be missing from the (SPI version of the) PAC...
             let usci = unsafe { USCI::steal() };
             while usci.is_busy() {}
-            if usci.framing_flag() {
-                return Err(SpiErr::BusConflict);
-            }
+            // if usci.framing_flag() {
+            //     return Err(SpiMultiErr::BusConflict);
+            // }
             Ok(())
         }
     }
@@ -606,7 +731,7 @@ mod ehal02 {
     use super::*;
 
     impl<USCI: SpiUsci> FullDuplex<u8> for Spi<USCI> {
-        type Error = SpiErr;
+        type Error = SpiMultiErr;
         fn read(&mut self) -> nb::Result<u8, Self::Error> {
             self.recv_byte()
         }
