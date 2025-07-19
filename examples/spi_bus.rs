@@ -2,7 +2,8 @@
 #![no_std]
 
 // This example uses the SpiBus embedded-hal interface, with a software controlled CS pin.
-
+// TODO: Undo changes after multi-master test 
+use embedded_hal::digital::StatefulOutputPin;
 use embedded_hal::spi::SpiBus;
 use embedded_hal::{digital::OutputPin, spi::MODE_0};
 use embedded_hal::delay::DelayNs;
@@ -25,8 +26,13 @@ fn main() -> ! {
     let mosi = p1.pin7.to_alternate1();
     let miso = p1.pin6.to_alternate1();
     let sck  = p1.pin5.to_alternate1();
-    let mut cs   = p1.pin4.to_output();
+    let ste  = p1.pin4.pulldown().to_alternate1();
+    let mut cs   = p1.pin3.to_output();
+    let mut red_led = p1.pin0.to_output(); 
     cs.set_high().ok();
+
+    let p6 = Batch::new(periph.P6).split(&pmm);
+    let mut green_led = p6.pin6.to_output();
 
     let (smclk, _aclk, mut delay) = ClockConfig::new(periph.CS)
         .mclk_dcoclk(DcoclkFreqSel::_8MHz, MclkDiv::_1)
@@ -38,8 +44,8 @@ fn main() -> ! {
     // Multi-master mode allows another master to control whether this device's SCK 
     // and MOSI pins are outputs or high impedance via the STE pin.
     let mut spi = SpiConfig::new(periph.E_USCI_A0, MODE_0, true)
-        .as_master_using_smclk(&smclk, 16) // 8MHz / 16 = 500kHz
-        .single_master_bus(miso, mosi, sck);
+        .as_master_using_smclk(&smclk, 16) // 8MHz / 16_000 = 500Hz
+        .multi_master_bus(miso, mosi, sck, ste, msp430fr2x5x_hal::spi::StePolarity::EnabledWhenLow);
 
     loop {
         // Perform the following transaction:
@@ -49,16 +55,19 @@ fn main() -> ! {
         cs.set_low().ok();
 
         // These methods do return errors - Overrun and BusConflict.
-        // Because this is a single-master bus we can ignore BusConflict, and because we 
-        // haven't used the non-blocking API (embedded-hal-nb) the Rx buffer should never overrun. 
-        spi.write(&[0x12]).unwrap();
-        spi.read(&mut recv[0..1]).unwrap();
-        spi.transfer(&mut recv[2..], &[0x34, 0x56]).unwrap();
+        // Because this is a single-master bus we can ignore BusConflict, and because we are a master 
+        // and haven't used the non-blocking API (embedded-hal-nb) the Rx buffer should never overrun. 
+        let res = spi.write(&[0x12]);
+        //spi.read(&mut recv[0..1]);
+        //spi.transfer(&mut recv[2..], &[0x34, 0x56]);
         
-        spi.flush().unwrap();
+        let res = res.and(spi.flush());
         cs.set_high().ok();
 
-        delay.delay_ms(1000);
+        green_led.set_state(res.is_ok().into()).ok();
+        red_led.toggle().ok();
+
+        // delay.delay_ms(1000);
     }
 }
 

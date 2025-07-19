@@ -54,7 +54,9 @@ pub enum Ucssel {
 pub enum Ucmode {
     #[default]
     ThreePinSPI = 0,
+    /// 0b01
     FourPinSPI1 = 1,
+    /// 0b10
     FourPinSPI0 = 2,
     I2CMode = 3,
 }
@@ -319,6 +321,7 @@ pub trait EusciSPI: Steal {
     fn ctw0_clear_rst(&self);
 
     fn ctw0_wr(&self, reg: &UcxSpiCtw0);
+    fn ucmode_rd(&self) -> u8;
 
     fn set_spi_mode(&self, mode: Mode);
 
@@ -331,6 +334,9 @@ pub trait EusciSPI: Steal {
 
     fn txbuf_wr(&self, val: u8);
 
+    fn ie_wr(&self, reg: u8);
+    fn ie_rd(&self) -> u8;
+
     fn set_transmit_interrupt(&self);
 
     fn clear_transmit_interrupt(&self);
@@ -340,12 +346,15 @@ pub trait EusciSPI: Steal {
     fn clear_receive_interrupt(&self);
 
     fn transmit_flag(&self) -> bool;
+    fn transmit_flag_set(&self);
 
     fn receive_flag(&self) -> bool;
+    fn receive_flag_set(&self);
 
     fn overrun_flag(&self) -> bool;
 
     fn framing_flag(&self) -> bool;
+    fn framing_flag_clr(&self);
 
     fn iv_rd(&self) -> u16;
 
@@ -438,6 +447,16 @@ macro_rules! eusci_impl {
             }
 
             #[inline(always)]
+            fn ie_wr(&self, reg: u8) {
+                self.$ucxie().write(|w| unsafe{ w.bits(reg as u16) });
+            }
+
+            #[inline(always)]
+            fn ie_rd(&self) -> u8 {
+                self.$ucxie().read().bits() as u8
+            }
+
+            #[inline(always)]
             fn set_transmit_interrupt(&self) {
                 unsafe { self.$ucxie().set_bits(|w| w.uctxie().set_bit()) }
             }
@@ -479,8 +498,18 @@ macro_rules! eusci_impl {
             }
 
             #[inline(always)]
+            fn transmit_flag_set(&self) {
+                self.$ucxifg().write(|w| w.uctxifg().set_bit())
+            }
+
+            #[inline(always)]
             fn receive_flag(&self) -> bool {
                 self.$ucxifg().read().ucrxifg().bit()
+            }
+
+            #[inline(always)]
+            fn receive_flag_set(&self) {
+                self.$ucxifg().write(|w| w.ucrxifg().set_bit())
             }
 
             #[inline(always)]
@@ -491,6 +520,14 @@ macro_rules! eusci_impl {
             #[inline(always)]
             fn framing_flag(&self) -> bool {
                 self.$ucxstatw().read().ucfe().bit()
+            }
+
+            fn framing_flag_clr(&self) {
+                unsafe{ self.$ucxstatw().clear_bits(|w| w.ucfe().clear_bit()) }
+            }
+
+            fn ucmode_rd(&self) -> u8 {
+                self.$ucxctlw0().read().ucmode().bits()
             }
 
             #[inline(always)]

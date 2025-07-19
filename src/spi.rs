@@ -27,6 +27,7 @@ use crate::{
     hw_traits::eusci::{EusciSPI, Ucmode, Ucssel, UcxSpiCtw0},
 };
 use core::marker::PhantomData;
+use msp430::asm::nop;
 use msp430fr2355 as pac;
 use nb::Error::WouldBlock;
 
@@ -178,6 +179,7 @@ pub struct SpiConfig<USCI: SpiUsci, ROLE>{
 
 impl<USCI: SpiUsci> SpiConfig<USCI, RoleNotSet> {
     /// Begin configuring an EUSCI peripheral for SPI mode.
+    #[inline]
     pub fn new(usci: USCI, mode: Mode, msb_first: bool) -> Self {
         let ctlw0 = UcxSpiCtw0{ 
             ucckph: match mode.phase {
@@ -192,7 +194,7 @@ impl<USCI: SpiUsci> SpiConfig<USCI, RoleNotSet> {
             ucsync: true,
             ucswrst: true,
             // UCSTEM = 1 isn't useful for us, since the STE acts like a CS pin in this case, but 
-            // it asserts and de-asserts after each byte automatically, and unfortunately 
+            // it asserts and de-asserts after each byte automatically, and 
             // ehal::SpiBus requires support for multi-byte transactions. 
             ucstem: false, 
             uc7bit: false, // Not supported
@@ -202,12 +204,14 @@ impl<USCI: SpiUsci> SpiConfig<USCI, RoleNotSet> {
         Self { usci, ctlw0, prescaler: 0, _phantom: PhantomData }
     }
     /// This device will act as a slave on the SPI bus.
+    #[inline(always)]
     pub fn as_slave(mut self) -> SpiConfig<USCI, Slave> {
         self.ctlw0.ucmst = false;
         // UCSSEL is 'don't care' in slave mode
         SpiConfig {usci: self.usci, ctlw0: self.ctlw0, prescaler: self.prescaler, _phantom: PhantomData}
     }
     /// This device will act as a master on the SPI bus, deriving SCLK from SMCLK.
+    #[inline(always)]
     pub fn as_master_using_smclk(mut self, _smclk: &Smclk, clk_div: u16) -> SpiConfig<USCI, Master> {
         self.ctlw0.ucmst = true;
         self.ctlw0.ucssel = Ucssel::Smclk;
@@ -215,6 +219,7 @@ impl<USCI: SpiUsci> SpiConfig<USCI, RoleNotSet> {
         SpiConfig {usci: self.usci, ctlw0: self.ctlw0, prescaler: self.prescaler, _phantom: PhantomData}
     }
     /// This device will act as a master on the SPI bus, deriving SCLK from ACLK.
+    #[inline(always)]
     pub fn as_master_using_aclk(mut self, _aclk: &Aclk, clk_div: u16) -> SpiConfig<USCI, Master> {
         self.ctlw0.ucmst = true;
         self.ctlw0.ucssel = Ucssel::Aclk;
@@ -225,14 +230,20 @@ impl<USCI: SpiUsci> SpiConfig<USCI, RoleNotSet> {
 impl<USCI: SpiUsci> SpiConfig<USCI, Master> {
     /// For an SPI bus with more than one master. 
     /// The STE pin is used by the other master to turn SCLK and MOSI high impedance, so the other master can talk on the bus.
-    pub fn multi_master_bus<MOSI, MISO, SCLK, STE>(mut self, _miso: MISO, _mosi: MOSI, _sclk: SCLK, _ste: STE, ste_pol: StePolarity) -> Spi<USCI> 
+    #[inline(always)]
+    pub fn multi_master_bus<MOSI, MISO, SCLK, STE>(mut self, _miso: MISO, _mosi: MOSI, _sclk: SCLK, _ste: STE, ste_pol: StePolarity) -> SpiMultiMaster<USCI> 
     where MOSI: Into<USCI::MOSI>, MISO: Into<USCI::MISO>, SCLK: Into<USCI::SCLK>, STE: Into<USCI::STE> {
-        self.ctlw0.ucmode = ste_pol.into();
+        // Ucmode and STE Polarity relationship is opposite between master and slave modes
+        self.ctlw0.ucmode = match ste_pol {
+            StePolarity::EnabledWhenHigh => Ucmode::FourPinSPI0,
+            StePolarity::EnabledWhenLow => Ucmode::FourPinSPI1,
+        };
         self.configure_hw();
-        Spi(PhantomData)
+        SpiMultiMaster{usci: self.usci, ste: _ste.into()}
     }
     /// For an SPI bus with a single master. 
     /// SCLK and MOSI are always outputs. The STE pin is not required.
+    #[inline(always)]
     pub fn single_master_bus<MOSI, MISO, SCLK>(mut self, _miso: MISO, _mosi: MOSI, _sclk: SCLK) -> Spi<USCI>
     where MOSI: Into<USCI::MOSI>, MISO: Into<USCI::MISO>, SCLK: Into<USCI::SCLK> {
         self.ctlw0.ucmode = Ucmode::ThreePinSPI;
@@ -243,14 +254,20 @@ impl<USCI: SpiUsci> SpiConfig<USCI, Master> {
 impl<USCI: SpiUsci> SpiConfig<USCI, Slave> {
     /// For an SPI bus with more than one slave. 
     /// The STE pin is used to turn MISO high impedance, so other slaves can talk on the bus.
+    #[inline(always)]
     pub fn shared_bus<MOSI, MISO, SCLK, STE>(mut self, _miso: MISO, _mosi: MOSI, _sclk: SCLK, _ste: STE, ste_pol: StePolarity) -> SpiSlave<USCI> 
     where MOSI: Into<USCI::MOSI>, MISO: Into<USCI::MISO>, SCLK: Into<USCI::SCLK>, STE: Into<USCI::STE> {
-        self.ctlw0.ucmode = ste_pol.into();
+        // Ucmode and STE Polarity relationship is opposite between master and slave modes
+        self.ctlw0.ucmode = match ste_pol {
+            StePolarity::EnabledWhenHigh => Ucmode::FourPinSPI1,
+            StePolarity::EnabledWhenLow  => Ucmode::FourPinSPI0,
+        };
         self.configure_hw();
         SpiSlave(self.usci)
     }
     /// For an SPI bus where this device is the only slave.
     /// MOSI is always an output. 
+    #[inline(always)]
     pub fn exclusive_bus<MOSI, MISO, SCLK>(mut self, _miso: MISO, _mosi: MOSI, _sclk: SCLK) -> SpiSlave<USCI> 
     where MOSI: Into<USCI::MOSI>, MISO: Into<USCI::MISO>, SCLK: Into<USCI::SCLK> {
         self.ctlw0.ucmode = Ucmode::ThreePinSPI;
@@ -287,14 +304,6 @@ pub enum StePolarity {
     EnabledWhenHigh = 0b01,
     /// This device is enabled when STE is low.
     EnabledWhenLow = 0b10,
-}
-impl From<StePolarity> for Ucmode {
-    fn from(value: StePolarity) -> Self {
-        match value {
-            StePolarity::EnabledWhenHigh => Ucmode::FourPinSPI1,
-            StePolarity::EnabledWhenLow  => Ucmode::FourPinSPI0,
-        }
-    }
 }
 
 /// An eUSCI peripheral that has been configured into an SPI slave.
@@ -548,6 +557,8 @@ impl<USCI: SpiUsci> SpiMultiMaster<USCI> {
             else {
                 Ok(usci.rxbuf_rd())
             }
+        } else if self.deactivated_by_ste() { 
+            Err(nb::Error::Other(SpiMultiErr::BusConflict))
         } else {
             Err(WouldBlock)
         }
@@ -556,22 +567,49 @@ impl<USCI: SpiUsci> SpiMultiMaster<USCI> {
     fn send_byte(&mut self, word: u8) -> nb::Result<(), SpiMultiErr> {
         let usci = unsafe { USCI::steal() };
         if usci.framing_flag() {
-            // TODO: Clear flag
-            return Err(nb::Error::Other(SpiMultiErr::BusConflict));
-        }
-        // Due to USCI50, it's not enough to check for UCFE, which only triggers if STE activates during a transmission
-        // We also have to check whether STE is active before we begin an SPI transaction, otherwise deadlock!
-        // Note there is the small possibility of a time-of-check vs time-of-use  error here, as STE may activate after we check
-        // but before we send the packet.
-        if self.ste.read() ^ self.usci.ste_active_low() {
+            usci.framing_flag_clr();
             return Err(nb::Error::Other(SpiMultiErr::BusConflict));
         }
         if usci.transmit_flag() {
+            // Due to USCI50, it's not enough to check for the framing flag, which only triggers if STE activates during a transmission
+            // We also have to check whether STE is active before we begin an SPI transaction, otherwise deadlock!
+            // Note there is a small time-of-check vs time-of-use race condition here, as STE may activate after we check
+            // but before we send the packet.
+            if self.deactivated_by_ste() {
+                return Err(nb::Error::Other(SpiMultiErr::BusConflict));
+            }
+            for _ in 0..300_000 { // TODO: Testing for race condition, remove
+                nop();
+            }
             usci.txbuf_wr(word);
+            // Fix race condition by resetting peripheral if it went high after we sent
+            if self.deactivated_by_ste() {
+                let rx_flag = self.usci.receive_flag();
+                let intrs = self.usci.ie_rd();
+                self.usci.ctw0_set_rst();
+                self.usci.ctw0_clear_rst();
+                if rx_flag {
+                    self.usci.receive_flag_set();
+                }
+                self.usci.transmit_flag_set();
+                self.usci.ie_wr(intrs);
+                return Err(nb::Error::Other(SpiMultiErr::BusConflict));
+            }
             Ok(())
         } else {
             Err(WouldBlock)
         }
+    }
+    #[inline(always)]
+    fn deactivated_by_ste(&mut self) -> bool {
+        // If STE is active low and STE is high, or
+        // if STE is active high and STE is low, 
+        // i.e. active_state XOR STE
+        self.active_when_ste_low() ^ self.ste.read()
+    }
+    #[inline(always)]
+    fn active_when_ste_low(&mut self) -> bool {
+        self.usci.ucmode_rd() == 0b10
     }
 }
 
@@ -647,7 +685,7 @@ mod ehal1 {
         fn write(&mut self, words: &[u8]) -> Result<(), Self::Error> {
             for word in words {
                 block!(self.send_byte(*word))?;
-                let _ = block!(self.recv_byte());
+                block!(self.recv_byte())?;
             }
             Ok(())
         }
@@ -698,8 +736,91 @@ mod ehal1 {
         /// ## Errors
         /// - Returns `SpiErr::BusConflict` if another master interrupted a transmission. Only occurs on a multi-master bus.
         fn flush(&mut self) -> Result<(), Self::Error> {
-            // I would usually do this by checking the UCBUSY bit, but 
-            // it seems to be missing from the (SPI version of the) PAC...
+            let usci = unsafe { USCI::steal() };
+            while usci.is_busy() {}
+            // if usci.framing_flag() {
+            //     return Err(SpiMultiErr::BusConflict);
+            // }
+            Ok(())
+        }
+    }
+
+    impl<USCI: SpiUsci> ErrorType for SpiMultiMaster<USCI> {
+        type Error = SpiMultiErr;
+    }
+
+    impl<USCI: SpiUsci> SpiBus for SpiMultiMaster<USCI> {
+        /// Send dummy packets (`0x00`) on MOSI so the slave can respond on MISO. Store the response in `words`.
+        /// 
+        /// ## Errors
+        /// - Returns `SpiErr::OverrunError` if there was already a byte in the Rx buffer that was not read.
+        /// - Returns `SpiErr::BusConflict` if another master interrupted our transmission. Only occurs on a multi-master bus.
+        fn read(&mut self, words: &mut [u8]) -> Result<(), Self::Error> {
+            for word in words {
+                block!(self.send_byte(0x00))?;
+                *word = block!(self.recv_byte())?;
+            }
+            Ok(())
+        }
+    
+        /// Write `words` to the slave, ignoring all the incoming words.
+        ///
+        /// ## Errors
+        /// - Returns `SpiErr::BusConflict` if another master interrupted our transmission. Only occurs on a multi-master bus.
+        fn write(&mut self, words: &[u8]) -> Result<(), Self::Error> {
+            for word in words {
+                block!(self.send_byte(*word))?;
+                block!(self.recv_byte())?;
+            }
+            Ok(())
+        }
+    
+        /// Write and read simultaneously. `write` is written to the slave on MOSI and
+        /// words received on MISO are stored in `read`.
+        ///
+        /// If `write` is longer than `read`, then after `read` is full any subsequent incoming words will be discarded. 
+        /// If `read` is longer than `write`, then dummy packets of `0x00` are sent until `read` is full.
+        /// ## Errors
+        /// - Returns `SpiErr::OverrunError` if there was already a byte in the Rx buffer that was not read.
+        /// - Returns `SpiErr::BusConflict` if another master interrupted our transmission. Only occurs on a multi-master bus.
+        fn transfer(&mut self, read: &mut [u8], write: &[u8]) -> Result<(), Self::Error> {
+            let mut read_bytes = read.iter_mut();
+            let mut write_bytes = write.iter();
+            const DUMMY_WRITE: u8 = 0x00;
+            let mut dummy_read = 0;
+
+            // Pair up read and write bytes (inserting dummy values as necessary) until everything's sent
+            loop {
+                let (rd, wr) = match (read_bytes.next(), write_bytes.next()) {
+                    (Some(rd), Some(wr)) => (rd, wr),
+                    (Some(rd), None    ) => (rd, &DUMMY_WRITE),
+                    (None,     Some(wr)) => (&mut dummy_read, wr),
+                    (None,     None    ) => break,
+                };
+
+                block!(self.send_byte(*wr))?;
+                *rd = block!(self.recv_byte())?;
+            }
+            Ok(())
+        }
+    
+        /// Write and read simultaneously. The contents of `words` are
+        /// written to the slave, and the received words are stored into the same
+        /// `words` buffer, overwriting it.
+        /// ## Errors
+        /// - Returns `SpiErr::OverrunError` if there was already a byte in the Rx buffer that was not read.
+        /// - Returns `SpiErr::BusConflict` if another master interrupted our transmission. Only occurs on a multi-master bus.
+        fn transfer_in_place(&mut self, words: &mut [u8]) -> Result<(), Self::Error> {
+            for word in words {
+                block!(self.send_byte(*word))?;
+                *word = block!(self.recv_byte())?;
+            }
+            Ok(())
+        }
+    
+        /// ## Errors
+        /// - Returns `SpiErr::BusConflict` if another master interrupted a transmission. Only occurs on a multi-master bus.
+        fn flush(&mut self) -> Result<(), Self::Error> {
             let usci = unsafe { USCI::steal() };
             while usci.is_busy() {}
             // if usci.framing_flag() {
@@ -723,6 +844,16 @@ mod ehal_nb1 {
             self.send_byte(word)
         }
     }
+
+    impl<USCI: SpiUsci> FullDuplex<u8> for SpiMultiMaster<USCI> {
+        fn read(&mut self) -> nb::Result<u8, Self::Error> {
+            self.recv_byte()
+        }
+    
+        fn write(&mut self, word: u8) -> nb::Result<(), Self::Error> {
+            self.send_byte(word)
+        }
+    }
 }
 
 #[cfg(feature = "embedded-hal-02")]
@@ -731,7 +862,7 @@ mod ehal02 {
     use super::*;
 
     impl<USCI: SpiUsci> FullDuplex<u8> for Spi<USCI> {
-        type Error = SpiMultiErr;
+        type Error = SpiErr;
         fn read(&mut self) -> nb::Result<u8, Self::Error> {
             self.recv_byte()
         }
@@ -744,4 +875,19 @@ mod ehal02 {
     // Implementing FullDuplex above gets us a blocking write and transfer implementation for free
     impl<USCI: SpiUsci> embedded_hal_02::blocking::spi::write::Default<u8> for Spi<USCI> {}
     impl<USCI: SpiUsci> embedded_hal_02::blocking::spi::transfer::Default<u8> for Spi<USCI> {}
+
+    impl<USCI: SpiUsci> FullDuplex<u8> for SpiMultiMaster<USCI> {
+        type Error = SpiMultiErr;
+        fn read(&mut self) -> nb::Result<u8, Self::Error> {
+            self.recv_byte()
+        }
+
+        fn send(&mut self, word: u8) -> nb::Result<(), Self::Error> {
+            self.send_byte(word)
+        }
+    }
+
+    // Implementing FullDuplex above gets us a blocking write and transfer implementation for free
+    impl<USCI: SpiUsci> embedded_hal_02::blocking::spi::write::Default<u8> for SpiMultiMaster<USCI> {}
+    impl<USCI: SpiUsci> embedded_hal_02::blocking::spi::transfer::Default<u8> for SpiMultiMaster<USCI> {}
 }
