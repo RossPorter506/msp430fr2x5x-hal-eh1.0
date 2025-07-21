@@ -1,8 +1,6 @@
 //! Implementation of [`embedded_hal`] traits for MSP430FR2x5x family of microcontrollers.
 //! Here are the [`datasheet`] and [`User's guide`] for reference.
 //!
-//! As of this writing, the only supported board is the MSP430FR2355.
-//!
 //! [`embedded_hal`]: https://github.com/rust-embedded/embedded-hal
 //! [`datasheet`]: http://www.ti.com/lit/ds/symlink/msp430fr2355.pdf
 //! [`User's guide`]: http://www.ti.com/lit/ug/slau445i/slau445i.pdf
@@ -60,15 +58,19 @@ pub mod watchdog;
 pub mod delay;
 pub mod i2c;
 pub mod spi;
-pub mod sac;
 pub mod ecomp;
 pub mod bak_mem;
 pub mod info_mem;
 pub mod crc;
 
+// Only on the MSP430FRx3xx
+#[cfg(feature = "sac")]
+pub mod sac;
+
 mod hw_traits;
 mod util;
 
+#[cfg(feature = "msp430fr2355")]
 pub use msp430fr2355 as pac;
 
 #[cfg(feature = "embedded-hal-02")]

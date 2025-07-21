@@ -46,18 +46,18 @@ fn main() -> ! {
 
         // Blocking send. Sends out data on the MOSI line
         // Sending is infallible, besides `nb::WouldBlock` when the bus is busy.
-        block!(spi.write(0b10101010)).unwrap();
+        let _ = block!(spi.write(0b10101010));
 
         // Writing on MOSI also shifts in data on MISO - read from the hardware buffer with `.read()`.
         // Every successful `.write()` call should be followed by a `.read()`.
-        // You should handle errors here rather than unwrapping
-        let _ = block!(spi.read()).unwrap();
+        // You should handle errors here rather than discarding
+        let _ = block!(spi.read());
 
         // This concludes the first byte of an SPI transaction.
         
         // Multi-byte transactions are performed by calling the methods repeatedly:
-        block!(spi.write(0xFF)).unwrap();
-        let _ = block!(spi.read()).unwrap();
+        let _ = block!(spi.write(0xFF));
+        let _ = block!(spi.read());
 
         cs.set_high().ok();
 

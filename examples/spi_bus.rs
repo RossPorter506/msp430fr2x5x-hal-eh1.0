@@ -53,11 +53,11 @@ fn main() -> ! {
         // These methods do return errors, but because we haven't used the non-blocking  
         // API (from embedded-hal-nb) or interrupts the Rx buffer should never overrun because  
         // the blocking interface automatically reads after every write. 
-        spi.write(&[0x12]).unwrap();
-        spi.read(&mut recv[0..2]).unwrap();
-        spi.transfer(&mut recv[2..], &[0x34, 0x56]).unwrap();
+        let _ = spi.write(&[0x12]);
+        let _ = spi.read(&mut recv[0..2]);
+        let _ = spi.transfer(&mut recv[2..], &[0x34, 0x56]);
         
-        spi.flush().unwrap();
+        let _ = spi.flush();
         cs.set_high().ok();
 
         delay.delay_ms(1000);

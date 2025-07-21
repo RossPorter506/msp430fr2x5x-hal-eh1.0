@@ -12,6 +12,7 @@ jobs:
     strategy:
       matrix:
         rust_toolchain: [nightly, nightly-2022-03-01]
+        device: [msp430fr2355]
     steps:
       - name: Checkout sources
         uses: actions/checkout@v2
@@ -39,4 +40,4 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --examples --features embedded-hal-02
+          args: --examples --features "embedded-hal-02 ${{ matrix.device }}"

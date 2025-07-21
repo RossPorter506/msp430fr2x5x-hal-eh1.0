@@ -515,10 +515,20 @@ mod ehal_nb1 {
     use super::*;
 
     impl<USCI: SpiUsci> FullDuplex<u8> for Spi<USCI> {
+        /// Reads the word stored in the shift register
+        /// 
+        /// **NOTE:** A word must be sent to the slave before attempting to call this method.
+        /// 
+        /// ## Errors
+        /// May return `WouldBlock` or [`SpiErr`]
         fn read(&mut self) -> nb::Result<u8, Self::Error> {
             self.recv_byte()
         }
     
+        /// Writes a word to the slave.
+        /// 
+        /// ## Errors
+        /// Infallible, besides `WouldBlock`
         fn write(&mut self, word: u8) -> nb::Result<(), Self::Error> {
             self.send_byte(word).map_err(map_infallible)
         }
@@ -532,10 +542,20 @@ mod ehal02 {
 
     impl<USCI: SpiUsci> FullDuplex<u8> for Spi<USCI> {
         type Error = SpiErr;
+        /// Reads the word stored in the shift register
+        /// 
+        /// **NOTE:** A word must be sent to the slave before attempting to call this method.
+        /// 
+        /// ## Errors
+        /// May return `WouldBlock` or [`SpiErr`]
         fn read(&mut self) -> nb::Result<u8, Self::Error> {
             self.recv_byte()
         }
 
+        /// Writes a word to the slave.
+        /// 
+        /// ## Errors
+        /// Infallible, besides `WouldBlock`
         fn send(&mut self, word: u8) -> nb::Result<(), Self::Error> {
             self.send_byte(word).map_err(map_infallible)
         }
