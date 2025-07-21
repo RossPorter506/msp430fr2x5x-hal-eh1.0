@@ -13,6 +13,7 @@ use msp430fr2x5x_hal::{
     prelude::*,
     serial::*,
     watchdog::Wdt,
+    pac,
 };
 use nb::block;
 use panic_msp430 as _;
@@ -21,7 +22,7 @@ use panic_msp430 as _;
 // since the last press. Sometimes we get 2 consecutive readings due to lack of debouncing.
 #[entry]
 fn main() -> ! {
-    let periph = msp430fr2355::Peripherals::take().unwrap();
+    let periph = pac::Peripherals::take().unwrap();
 
     let mut fram = Fram::new(periph.FRCTL);
     Wdt::constrain(periph.WDT_A);

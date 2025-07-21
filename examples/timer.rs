@@ -10,6 +10,7 @@ use msp430fr2x5x_hal::{
     pmm::Pmm,
     timer::{CapCmp, SubTimer, Timer, TimerConfig, TimerDiv, TimerExDiv, TimerParts3, TimerPeriph},
     watchdog::Wdt,
+    pac,
 };
 use nb::block;
 use panic_msp430 as _;
@@ -17,7 +18,7 @@ use panic_msp430 as _;
 // 0.5 second on, 0.5 second off
 #[entry]
 fn main() -> ! {
-    let periph = msp430fr2355::Peripherals::take().unwrap();
+    let periph = pac::Peripherals::take().unwrap();
 
     let mut fram = Fram::new(periph.FRCTL);
     Wdt::constrain(periph.WDT_A);

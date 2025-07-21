@@ -11,6 +11,7 @@ use msp430fr2x5x_hal::{
     pmm::Pmm,
     serial::*,
     watchdog::Wdt,
+    pac,
 };
 
 use nb::block;
@@ -24,7 +25,7 @@ use panic_never as _;
 // Serial settings are listed in the code
 #[entry]
 fn main() -> ! {
-    if let Some(periph) = msp430fr2355::Peripherals::take() {
+    if let Some(periph) = pac::Peripherals::take() {
         let mut fram = Fram::new(periph.FRCTL);
         let _wdt = Wdt::constrain(periph.WDT_A);
 

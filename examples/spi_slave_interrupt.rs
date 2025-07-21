@@ -21,17 +21,17 @@ use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 use embedded_hal::spi::{SpiBus, MODE_0};
 use embedded_hal::delay::DelayNs;
 use msp430_rt::entry;
-use msp430fr2355::{interrupt, E_USCI_A0};
 use msp430fr2x5x_hal::spi::{SpiConfig, SpiErr, SpiSlave, StePolarity};
 use msp430fr2x5x_hal::{
-    clock::{ClockConfig, DcoclkFreqSel, MclkDiv, SmclkDiv}, fram::Fram, gpio::Batch, pmm::Pmm, watchdog::Wdt
+    clock::{ClockConfig, DcoclkFreqSel, MclkDiv, SmclkDiv}, fram::Fram, gpio::Batch, pmm::Pmm, watchdog::Wdt,
+    pac::{self, interrupt, E_USCI_A0},
 };
 
 use panic_msp430 as _;
 
 #[entry]
 fn main() -> ! {
-    let periph = msp430fr2355::Peripherals::take().unwrap();
+    let periph = pac::Peripherals::take().unwrap();
 
     let mut fram = Fram::new(periph.FRCTL);
     let _wdt = Wdt::constrain(periph.WDT_A);

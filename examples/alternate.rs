@@ -2,12 +2,12 @@
 #![no_std]
 
 use msp430_rt::entry;
-use msp430fr2x5x_hal::{gpio::Batch, pmm::Pmm, watchdog::Wdt};
+use msp430fr2x5x_hal::{gpio::Batch, pmm::Pmm, watchdog::Wdt, pac};
 use panic_msp430 as _;
 
 #[entry]
 fn main() -> ! {
-    let periph = msp430fr2355::Peripherals::take().unwrap();
+    let periph = pac::Peripherals::take().unwrap();
     let _wdt = Wdt::constrain(periph.WDT_A);
 
     let pmm = Pmm::new(periph.PMM);

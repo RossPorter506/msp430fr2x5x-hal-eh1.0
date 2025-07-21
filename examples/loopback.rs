@@ -11,6 +11,7 @@ use msp430fr2x5x_hal::{
     pmm::Pmm,
     serial::*,
     watchdog::Wdt,
+    pac,
 };
 use nb::block;
 use panic_msp430 as _;
@@ -41,7 +42,7 @@ fn setup_uart<S: SerialUsci>(
 // Only UART1 settings matter for the host
 #[entry]
 fn main() -> ! {
-    let periph = msp430fr2355::Peripherals::take().unwrap();
+    let periph = pac::Peripherals::take().unwrap();
 
     let mut fram = Fram::new(periph.FRCTL);
     let _wdt = Wdt::constrain(periph.WDT_A);

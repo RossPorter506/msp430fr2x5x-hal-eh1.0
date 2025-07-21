@@ -4,7 +4,7 @@
 use embedded_hal::{digital::*};
 use msp430_rt::entry;
 use msp430fr2x5x_hal::{
-    bak_mem::BackupMemory, gpio::Batch, pmm::Pmm
+    bak_mem::BackupMemory, gpio::Batch, pmm::Pmm, pac
 };
 use panic_msp430 as _;
 
@@ -14,7 +14,7 @@ use panic_msp430 as _;
 #[entry]
 fn main() -> ! {
     // Take peripherals
-    let periph = msp430fr2355::Peripherals::take().unwrap();
+    let periph = pac::Peripherals::take().unwrap();
 
     // DON'T disable the watchdog. It will reset us after a few ms.
     //let _wdt = Wdt::constrain(periph.WDT_A);

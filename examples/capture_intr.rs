@@ -10,7 +10,7 @@ use critical_section::with;
 use embedded_hal::digital::StatefulOutputPin;
 use msp430::interrupt::{enable, Mutex};
 use msp430_rt::entry;
-use msp430fr2355::interrupt;
+use crate::pac::interrupt;
 use msp430fr2x5x_hal::{
     capture::{
         CapCmp, CapTrigger, Capture, CaptureParts3, CaptureVector, TBxIV, TimerConfig, CCR1,
@@ -21,6 +21,7 @@ use msp430fr2x5x_hal::{
     gpio::*,
     pmm::Pmm,
     watchdog::Wdt,
+    pac,
 };
 
 #[cfg(debug_assertions)]
