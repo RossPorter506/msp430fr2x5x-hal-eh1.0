@@ -23,3 +23,7 @@ target = "msp430-none-elf"
 # MSP430 doesn't come with libcore compiled already. But when it does, this
 # key can be removed.
 build-std = ["core"]
+
+# Panics immediately call 'abort'. This removes all string formatting from panics, massively decreasing the binary size of debug builds.
+# This also means you get no panic info!
+# build-std-features = ["panic_immediate_abort"]
