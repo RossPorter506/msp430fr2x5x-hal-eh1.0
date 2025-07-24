@@ -1,38 +1,41 @@
 use crate::{
-    ecomp::{ComparatorDac, BufferSel, DacVRef, FilterStrength, Hysteresis, NegativeInput, OutputPolarity, PositiveInput, PowerMode}, 
-    gpio::{Alternate2, Floating, Input, Output, Pin, Pin0, Pin1, Pin4, Pin5}, sac::Amplifier,
-    pac::{E_COMP0, E_COMP1, P1, P2, SAC0, SAC1, SAC2, SAC3},
+    ecomp::{ComparatorDac, BufferSel, DacVRef, FilterStrength, Hysteresis, OutputPolarity, PowerMode}, 
+    pac::{E_COMP0, E_COMP1},
 };
 use super::Steal;
 
+/// Many of the inputs to the eCOMP unit are device-specific. 
 #[allow(non_camel_case_types)]
-pub trait ECompPeriph: Steal {
-    /// COMPx.0 - One of the two GPIO inputs that can be fed into either comparator input.
-    /// 
-    /// For COMP0 this is P1.0, COMP1 has P2.5.
+pub trait ECompInputs: ECompPeriph {
     type COMPx_0;
-    /// COMPx.1 - One of the two GPIO inputs that can be fed into either comparator input.
-    /// 
-    /// For COMP0 this is P1.1, COMP1 has P2.4.
     type COMPx_1;
-    /// The GPIO pin that can connect to the comparator output. 
-    /// 
-    /// For COMP0 this is P2.0, for COMP1 this is P2.1.
     type COMPx_Out;
-    /// The Smart Analog Combo peripheral that is accessible from the positive comparator input:
-    /// 
-    /// SAC0 for COMP0, SAC2 for COMP1.
+
+    // The first two device-specific inputs are shared between pos and neg inputs
+    type DeviceSpecific0;
+    type DeviceSpecific1;
+
+    // Device specific 2 and 3 are distinct between pos and neg inputs
+    type DeviceSpecific2Pos;
+    type DeviceSpecific2Neg;
+
+    type DeviceSpecific3Pos;
+    type DeviceSpecific3Neg;
+
+    // The eCOMP can alternatively source from SAC units, if they exist
+    #[cfg(feature = "sac")]
     type SACp;
-    /// The Smart Analog Combo peripheral that is accessible from the negative comparator input:
-    /// 
-    /// SAC1 for COMP0, SAC3 for COMP1.
+    #[cfg(feature = "sac")]
     type SACn;
+}
+
+pub trait ECompPeriph: Steal {
     fn cpxdacctl(enable: bool, vref: DacVRef, buf_mode: DacBufferMode, buf: BufferSel);
     fn set_buf1_val(buf: u8);
     fn set_buf2_val(buf: u8);
     fn set_dac_buffer_mode(mode: DacBufferMode);
     fn select_buffer(sel: BufferSel);
-    fn cpxctl0(pos_in: PositiveInput<Self>, neg_in: NegativeInput<Self>) where Self: core::marker::Sized;
+    fn cpxctl0(pos_in: u8, neg_in: u8) where Self: core::marker::Sized;
     fn configure_comparator(pol: OutputPolarity, pwr: PowerMode, hstr: Hysteresis, fltr: FilterStrength);
     fn value() -> bool;
     fn en_cpie();
@@ -65,13 +68,9 @@ impl From<DacBufferMode> for bool {
 
 macro_rules! impl_ecomp {
     ($COMP: ident, 
-        $inPP: ident, $inPp: ident, 
-        $inNP: ident, $inNp: ident, 
-        $outP: ident, $outp: ident,
-        $SACp: ty, $SACn: ty,
-        $cpctl0: ident, $cpctl1: ident, 
-        $cpdacctl: ident, $cpdacdata: ident,
-        $cpint: ident, $cpiv: ident ) => {
+    $cpctl0: ident, $cpctl1: ident, 
+    $cpdacctl: ident, $cpdacdata: ident,
+    $cpint: ident, $cpiv: ident ) => {
         impl Steal for $COMP {
             #[inline(always)]
             unsafe fn steal() -> Self {
@@ -79,12 +78,6 @@ macro_rules! impl_ecomp {
             }
         }
         impl ECompPeriph for $COMP{
-            type COMPx_0   = Pin<$inPP, $inPp, Alternate2<Input<Floating>>>;
-            type COMPx_1   = Pin<$inNP, $inNp, Alternate2<Input<Floating>>>;
-            type COMPx_Out = Pin<$outP, $outp, Alternate2<Output>>;
-            type SACp      = $SACp;
-            type SACn      = $SACn;
-
             #[inline(always)]
             fn cpxdacctl(enable: bool, vref: DacVRef, buf_mode: DacBufferMode, buf: BufferSel) {
                 unsafe{
@@ -126,14 +119,14 @@ macro_rules! impl_ecomp {
                 }
             }
             #[inline(always)]
-            fn cpxctl0(pos_in: PositiveInput<$COMP>, neg_in: NegativeInput<$COMP>) {
+            fn cpxctl0(pos_in: u8, neg_in: u8) {
                 unsafe{
                     let comp = $COMP::steal();
                     comp.$cpctl0.modify(|_, w| w
                         .cppen().set_bit()
-                        .cppsel().bits(pos_in.into())
+                        .cppsel().bits(pos_in)
                         .cpnen().set_bit()
-                        .cpnsel().bits(neg_in.into())
+                        .cpnsel().bits(neg_in)
                     );
                 }
             }
@@ -190,11 +183,7 @@ macro_rules! impl_ecomp {
 }
 
 impl_ecomp!(
-    E_COMP0,  // eCOMP module
-    P1, Pin0, // Positive input pin
-    P1, Pin1, // Negative input pin
-    P2, Pin0, // Output pin
-    Amplifier<SAC0>, Amplifier<SAC2>, // Paired SAC units (pos in, neg in)
+    E_COMP0,
     cpctl0, cpctl1,
     cpdacctl, cpdacdata,
     cpint, cpiv
@@ -202,10 +191,6 @@ impl_ecomp!(
 
 impl_ecomp!(
     E_COMP1,
-    P2, Pin5,
-    P2, Pin4,
-    P2, Pin1,
-    Amplifier<SAC1>, Amplifier<SAC3>,
     cp1ctl0, cp1ctl1,
     cp1dacctl, cp1dacdata,
     cp1int, cp1iv

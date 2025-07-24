@@ -12,10 +12,11 @@ documentation = "https://docs.rs/msp430fr2x5x-hal"
 [features]
 default = []
 embedded-hal-02 = ["dep:embedded-hal-02", "dep:void"]
-msp430fr2355 = ["dep:msp430fr2355", "sac"] # 32kB FRAM + SAC unit
-msp430fr2353 = ["dep:msp430fr2355", "sac"] # 16kB FRAM + SAC unit
-msp430fr2155 = ["dep:msp430fr2355"]        # 32kB FRAM
-msp430fr2153 = ["dep:msp430fr2355"]        # 16kB FRAM
+msp430fr2355 = ["dep:msp430fr2355", "2x5x", "sac"] # 32kB FRAM + SAC unit
+msp430fr2353 = ["dep:msp430fr2355", "2x5x", "sac"] # 16kB FRAM + SAC unit
+msp430fr2155 = ["dep:msp430fr2355", "2x5x"]       # 32kB FRAM
+msp430fr2153 = ["dep:msp430fr2355", "2x5x"]       # 16kB FRAM
+2x5x = []
 sac = []
 
 [dependencies]

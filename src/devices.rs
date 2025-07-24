@@ -1,0 +1,1 @@
+pub mod msp430fr2x5x;

@@ -35,11 +35,11 @@
 //! | eCOMP1 | SAC2 | SAC3 | `P2.5`  | `P2.4`  | `P2.1`   |
 
 use core::marker::PhantomData;
-use crate::{hw_traits::ecomp::{CompDacPeriph, DacBufferMode, ECompPeriph}, pmm::InternalVRef};
+use crate::{hw_traits::ecomp::{DacBufferMode, ECompInputs, ECompPeriph}, pmm::InternalVRef};
 
 /// Struct representing a configuration for an enhanced comparator (eCOMP) module.
-pub struct ECompConfig<COMP: ECompPeriph>(PhantomData<COMP>);
-impl<COMP: ECompPeriph> ECompConfig<COMP> {
+pub struct ECompConfig<COMP: ECompInputs>(PhantomData<COMP>);
+impl<COMP: ECompInputs> ECompConfig<COMP> {
     /// Begin configuration of an enhanced comparator (eCOMP) module.
     #[inline(always)]
     pub fn begin(_reg: COMP) -> (ComparatorDacConfig<COMP>, ComparatorConfig<COMP, NoModeSet>) {
@@ -48,8 +48,8 @@ impl<COMP: ECompPeriph> ECompConfig<COMP> {
 }
 
 /// A configuration for the comparator in an eCOMP module
-pub struct ComparatorConfig<COMP: ECompPeriph, MODE>(PhantomData<COMP>, PhantomData<MODE>);
-impl<COMP: ECompPeriph> ComparatorConfig<COMP, NoModeSet> {
+pub struct ComparatorConfig<COMP: ECompInputs, MODE>(PhantomData<COMP>, PhantomData<MODE>);
+impl<COMP: ECompInputs> ComparatorConfig<COMP, NoModeSet> {
     /// Configure the comparator with the provided settings and turn it on 
     #[inline(always)]
     pub fn configure(self, 
@@ -60,12 +60,12 @@ impl<COMP: ECompPeriph> ComparatorConfig<COMP, NoModeSet> {
         hstr: Hysteresis, 
         fltr: FilterStrength) -> ComparatorConfig<COMP, ModeSet> {
 
-        COMP::cpxctl0(pos_in, neg_in);
+        COMP::cpxctl0(pos_in.cppsel(), neg_in.cpnsel());
         COMP::configure_comparator(pol, pwr, hstr, fltr);
         ComparatorConfig(PhantomData, PhantomData)
     }
 }
-impl<COMP: ECompPeriph> ComparatorConfig<COMP, ModeSet> {
+impl<COMP: ECompInputs> ComparatorConfig<COMP, ModeSet> {
     /// Route the comparator output to its GPIO pin (P2.0 for COMP0, P2.1 for COMP1).
     #[inline(always)]
     pub fn with_output_pin(self, _pin: COMP::COMPx_Out) -> Comparator<COMP> {
@@ -118,65 +118,8 @@ impl<COMP: ECompPeriph> Comparator<COMP> {
     }
 }
 
-/// List of possible inputs to the positive input of an eCOMP comparator.
-/// The amplifier output and DAC options take a reference to ensure they have been configured.
-#[allow(non_camel_case_types)]
-pub enum PositiveInput<'a, COMP: ECompPeriph> {
-    /// COMPx.0. P1.0 for COMP0, P2.5 for COMP1
-    COMPx_0(COMP::COMPx_0),
-    /// COMPx.1. P1.1 for COMP0, P2.4 for COMP1
-    COMPx_1(COMP::COMPx_1),
-    /// Internal 1.2V reference
-    _1V2,
-    /// Output of amplifier SAC0 for eCOMP0, SAC2 for eCOMP1. 
-    /// 
-    /// Requires a reference to ensure that it has been configured.
-    OAxO(&'a COMP::SACp),
-    /// This eCOMP's internal 6-bit DAC
-    /// 
-    /// Requires a reference to ensure that it has been configured.
-    Dac(&'a dyn CompDacPeriph<COMP>),
-}
-impl<COMP: ECompPeriph> From<PositiveInput<'_, COMP >> for u8 {
-    #[inline(always)]
-    fn from(value: PositiveInput<'_, COMP >) -> Self {
-        match value {
-            PositiveInput::COMPx_0(_)   => 0b000,
-            PositiveInput::COMPx_1(_)   => 0b001,
-            PositiveInput::_1V2         => 0b010,
-            PositiveInput::OAxO(_)      => 0b101,
-            PositiveInput::Dac(_)       => 0b110,
-        }
-    }
-}
-
-/// List of possible inputs to the negative input of an eCOMP comparator.
-/// The amplifier output and DAC options take a reference to ensure they have been configured.
-#[allow(non_camel_case_types)]
-pub enum NegativeInput<'a, COMP: ECompPeriph> {
-    /// COMPx.0. P1.0 for COMP0, P2.5 for COMP1
-    COMPx_0(COMP::COMPx_0),
-    /// COMPx.1. P1.1 for COMP0, P2.4 for COMP1
-    COMPx_1(COMP::COMPx_1),
-    /// Internal 1.2V reference
-    _1V2,
-    /// Output of amplifier SAC1 for eCOMP0, SAC3 for eCOMP1. 
-    OAxO(&'a COMP::SACn),
-    /// This eCOMP's internal 6-bit DAC
-    Dac(&'a dyn CompDacPeriph<COMP>),
-}
-impl<COMP: ECompPeriph> From<NegativeInput<'_, COMP >> for u8 {
-    #[inline(always)]
-    fn from(value: NegativeInput<'_, COMP >) -> Self {
-        match value {
-            NegativeInput::COMPx_0(_)   => 0b000,
-            NegativeInput::COMPx_1(_)   => 0b001,
-            NegativeInput::_1V2         => 0b010,
-            NegativeInput::OAxO(_)      => 0b101,
-            NegativeInput::Dac(_)       => 0b110,
-        }
-    }
-}
+pub use crate::device_specific::PositiveInput;
+pub use crate::device_specific::NegativeInput;
 
 /// Represents a configuration for the DAC in an eCOMP peripheral
 pub struct ComparatorDacConfig<COMP>(PhantomData<COMP>);

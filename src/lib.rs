@@ -69,11 +69,15 @@ pub mod sac;
 
 mod hw_traits;
 mod util;
-
-#[cfg(feature = "msp430fr2355")]
-pub use msp430fr2355 as pac;
+mod devices;
 
 #[cfg(feature = "embedded-hal-02")]
 pub use embedded_hal_02 as ehal_02;
 
 pub use embedded_hal as ehal;
+
+#[cfg(feature = "2x5x")]
+use crate::devices::msp430fr2x5x as device_specific;
+
+#[cfg(feature = "2x5x")]
+pub use msp430fr2355 as pac;
