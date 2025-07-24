@@ -1,6 +1,5 @@
 use crate::{
     ecomp::{ComparatorDac, BufferSel, DacVRef, FilterStrength, Hysteresis, OutputPolarity, PowerMode}, 
-    pac::{E_COMP0, E_COMP1},
 };
 use super::Steal;
 
@@ -181,17 +180,4 @@ macro_rules! impl_ecomp {
         }
     };
 }
-
-impl_ecomp!(
-    E_COMP0,
-    cpctl0, cpctl1,
-    cpdacctl, cpdacdata,
-    cpint, cpiv
-);
-
-impl_ecomp!(
-    E_COMP1,
-    cp1ctl0, cp1ctl1,
-    cp1dacctl, cp1dacdata,
-    cp1int, cp1iv
-);
+pub(crate) use impl_ecomp;

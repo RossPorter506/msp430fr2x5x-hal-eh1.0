@@ -63,9 +63,11 @@ pub mod bak_mem;
 pub mod info_mem;
 pub mod crc;
 
-// Only on the MSP430FRx3xx
-#[cfg(feature = "sac")]
-pub mod sac;
+#[cfg(feature = "sac_l3")]
+pub mod sac_l3;
+
+#[cfg(feature = "sac_l1")]
+pub mod sac_l1;
 
 mod hw_traits;
 mod util;

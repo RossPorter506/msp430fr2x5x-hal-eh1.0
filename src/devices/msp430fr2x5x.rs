@@ -1,10 +1,10 @@
 use core::convert::Infallible;
 
 use crate::gpio::{Alternate2, Floating, Input, Output, Pin, Pin0, Pin1, Pin4, Pin5};
-use crate::hw_traits::ecomp::{CompDacPeriph, ECompInputs};
+use crate::hw_traits::{Steal, ecomp::{CompDacPeriph, ECompInputs, ECompPeriph}};
 use crate::pac::{P1, P2, P3, E_COMP0, E_COMP1};
 #[cfg(feature = "sac")]
-use crate::{sac::Amplifier, pac::{SAC0, SAC1, SAC2, SAC3}};
+use crate::{sac_l3::Amplifier, pac::{SAC0, SAC1, SAC2, SAC3}};
 
 /********** eCOMP ***********/
 
@@ -127,3 +127,39 @@ impl ECompInputs for E_COMP1 {
     #[cfg(feature = "sac")]
     type SACn = Amplifier<SAC3>;
 }
+
+use crate::hw_traits::ecomp::impl_ecomp;
+use crate::ecomp::{BufferSel, DacBufferMode, DacVRef, FilterStrength, Hysteresis, OutputPolarity, PowerMode};
+
+crate::hw_traits::ecomp::impl_ecomp!(
+    E_COMP0,
+    cpctl0, cpctl1,
+    cpdacctl, cpdacdata,
+    cpint, cpiv
+);
+
+impl_ecomp!(
+    E_COMP1,
+    cp1ctl0, cp1ctl1,
+    cp1dacctl, cp1dacdata,
+    cp1int, cp1iv
+);
+
+/********** SAC **********/
+
+impl_sac_periph!(
+    SAC0, P1, Pin3, Pin2, Pin1, // Register block, port, pos_in, neg_in, out
+    sac0oa, sac0pga, sac0dac, sac0dat
+);
+impl_sac_periph!(
+    SAC1, P1, Pin7, Pin6, Pin5,
+    sac1oa, sac1pga, sac1dac, sac1dat
+);
+impl_sac_periph!(
+    SAC2, P3, Pin3, Pin2, Pin1,
+    sac2oa, sac2pga, sac2dac, sac2dat
+);
+impl_sac_periph!(
+    SAC3, P3, Pin7, Pin6, Pin5,
+    sac3oa, sac3pga, sac3dac, sac3dat
+);

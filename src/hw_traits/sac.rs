@@ -1,6 +1,6 @@
 use crate::{
     gpio::{Pin, Alternate3, Input, Floating, Pin1, Pin2, Pin3, Pin5, Pin6, Pin7}, 
-    hw_traits::Steal, sac::{LoadTrigger, VRef, PowerMode},
+    hw_traits::Steal,
     pac::{P1, P3, SAC0, SAC1, SAC2, SAC3},
 };
 
@@ -12,9 +12,9 @@ pub trait SacPeriph {
     type NegInputPin;
     /// Opamp output pin
     type OutputPin;
-    fn configure_sacoa(psel: u8, nsel: NSel, pm: PowerMode);
+    fn configure_sacoa(psel: u8, nsel: NSel, pm: bool);
     fn configure_sacpga(gain: u8, mode: MSel);
-    fn configure_dac(load_condition: LoadTrigger, vref: VRef);
+    fn configure_dac(load_condition: u8, vref: bool);
     fn set_dac_count(val: u16);
 }
 
@@ -49,13 +49,13 @@ macro_rules! impl_sac_periph {
             type NegInputPin = Pin<$port, $inNp, Alternate3<Input<Floating>>>;
             type OutputPin   = Pin<$port, $outp, Alternate3<Input<Floating>>>;
             #[inline(always)]
-            fn configure_sacoa(psel: u8, nsel: NSel, pm: PowerMode) {
+            fn configure_sacoa(psel: u8, nsel: NSel, pm: bool) {
                 unsafe{
                     let sac = $SAC::steal();
                     sac.$sacXoa.write(|w| w
                         .nsel().bits(nsel as u8)
                         .psel().bits(psel)
-                        .oapm().bit(pm.into())
+                        .oapm().bit(pm)
                         .nmuxen().set_bit()
                         .pmuxen().set_bit()
                         .sacen().set_bit()
@@ -74,12 +74,12 @@ macro_rules! impl_sac_periph {
                 }
             }
             #[inline(always)]
-            fn configure_dac(lsel: LoadTrigger, vref: VRef) {
+            fn configure_dac(lsel: u8, vref: bool) {
                 unsafe{
                     let sac = $SAC::steal();
                     sac.$sacXdac.write(|w| w
-                        .dacsref().bit(vref.into())
-                        .daclsel().bits(lsel.into())
+                        .dacsref().bit(vref)
+                        .daclsel().bits(lsel)
                         .dacdmae().clear_bit()
                         .dacie().clear_bit()
                         .dacen().set_bit()
