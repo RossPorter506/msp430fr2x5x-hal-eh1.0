@@ -1,0 +1,6 @@
+{
+    "rust-analyzer.cargo.features": [
+        "embedded-hal-02",
+        "msp430fr2355",
+    ]
+}
