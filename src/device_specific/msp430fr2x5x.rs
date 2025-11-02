@@ -386,3 +386,42 @@ mod sac {
         sac3oa, sac3pga, sac3dac, sac3dat
     );
 }
+
+/* Serial */
+mod serial {
+    use crate::{pac, gpio::*, serial::*};
+
+    impl SerialUsci for pac::E_USCI_A0 {
+        type ClockPin = UsciA0ClockPin;
+        type TxPin = UsciA0TxPin;
+        type RxPin = UsciA0RxPin;
+    }
+    impl SerialUsci for pac::E_USCI_A1 {
+        type ClockPin = UsciA1ClockPin;
+        type TxPin = UsciA1TxPin;
+        type RxPin = UsciA1RxPin;
+    }
+    /// UCLK pin for E_USCI_A0
+    pub struct UsciA0ClockPin;
+    impl_serial_pin!(UsciA0ClockPin, P1, Pin5);
+
+    /// Tx pin for E_USCI_A0
+    pub struct UsciA0TxPin;
+    impl_serial_pin!(UsciA0TxPin, P1, Pin7);
+
+    /// Rx pin for E_USCI_A0
+    pub struct UsciA0RxPin;
+    impl_serial_pin!(UsciA0RxPin, P1, Pin6);
+
+    /// UCLK pin for E_USCI_A1
+    pub struct UsciA1ClockPin;
+    impl_serial_pin!(UsciA1ClockPin, P4, Pin1);
+
+    /// Tx pin for E_USCI_A1
+    pub struct UsciA1TxPin;
+    impl_serial_pin!(UsciA1TxPin, P4, Pin3);
+
+    /// Rx pin for E_USCI_A1
+    pub struct UsciA1RxPin;
+    impl_serial_pin!(UsciA1RxPin, P4, Pin2);
+}
