@@ -94,3 +94,44 @@ mod adc {
     impl_adc_channel_pin!(P5, Pin2, 10);
     impl_adc_channel_pin!(P5, Pin3, 11);
 }
+
+/* Capture */
+mod capture {
+    use crate::{pac, gpio::*, capture::CapturePeriph};
+
+    impl CapturePeriph for pac::TB0 {
+        type Gpio1 = Pin<P1, Pin6, Alternate2<Input<Floating>>>;
+        type Gpio2 = Pin<P1, Pin7, Alternate2<Input<Floating>>>;
+        type Gpio3 = ();
+        type Gpio4 = ();
+        type Gpio5 = ();
+        type Gpio6 = ();
+    }
+
+    impl CapturePeriph for pac::TB1 {
+        type Gpio1 = Pin<P2, Pin0, Alternate1<Input<Floating>>>;
+        type Gpio2 = Pin<P2, Pin1, Alternate1<Input<Floating>>>;
+        type Gpio3 = ();
+        type Gpio4 = ();
+        type Gpio5 = ();
+        type Gpio6 = ();
+    }
+
+    impl CapturePeriph for pac::TB2 {
+        type Gpio1 = Pin<P5, Pin0, Alternate1<Input<Floating>>>;
+        type Gpio2 = Pin<P5, Pin1, Alternate1<Input<Floating>>>;
+        type Gpio3 = ();
+        type Gpio4 = ();
+        type Gpio5 = ();
+        type Gpio6 = ();
+    }
+
+    impl CapturePeriph for pac::TB3 {
+        type Gpio1 = Pin<P6, Pin0, Alternate1<Input<Floating>>>;
+        type Gpio2 = Pin<P6, Pin1, Alternate1<Input<Floating>>>;
+        type Gpio3 = Pin<P6, Pin2, Alternate1<Input<Floating>>>;
+        type Gpio4 = Pin<P6, Pin3, Alternate1<Input<Floating>>>;
+        type Gpio5 = Pin<P6, Pin4, Alternate1<Input<Floating>>>;
+        type Gpio6 = Pin<P6, Pin5, Alternate1<Input<Floating>>>;
+    }
+}
