@@ -40,7 +40,6 @@
 
 #![deny(missing_docs)]
 
-pub mod adc;
 pub mod bak_mem;
 pub mod batch_gpio;
 pub mod capture;
@@ -59,6 +58,9 @@ pub mod serial;
 pub mod spi;
 pub mod timer;
 pub mod watchdog;
+
+#[cfg(feature = "adc")]
+pub mod adc;
 
 #[cfg(feature = "2x5x")]
 #[path="clock_enhanced.rs"]
