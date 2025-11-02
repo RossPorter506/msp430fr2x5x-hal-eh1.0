@@ -55,7 +55,6 @@ pub mod pmm;
 pub mod prelude;
 pub mod pwm;
 pub mod rtc;
-pub mod sac;
 pub mod serial;
 pub mod spi;
 pub mod timer;
@@ -71,6 +70,14 @@ pub mod clock;
 
 #[cfg(feature = "info_mem")]
 pub mod info_mem;
+
+#[cfg(feature = "sac_l3")]
+#[path="sac_l3.rs"]
+pub mod sac;
+
+#[cfg(feature = "sac_l1")]
+#[path="sac_l1.rs"]
+pub mod sac;
 
 mod device_specific;
 mod hw_traits;

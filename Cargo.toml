@@ -14,13 +14,14 @@ default = []
 embedded-hal-02 = ["dep:embedded-hal-02", "dep:void"]
 
 # msp430fr2x5x
-msp430fr2355 = ["2x5x", "sac"] # 32kB FRAM + SAC unit
-msp430fr2353 = ["2x5x", "sac"] # 16kB FRAM + SAC unit
-msp430fr2155 = ["2x5x"]        # 32kB FRAM
-msp430fr2153 = ["2x5x"]        # 16kB FRAM
+msp430fr2355 = ["2x5x", "sac_l3"] # 32kB FRAM + SAC unit
+msp430fr2353 = ["2x5x", "sac_l3"] # 16kB FRAM + SAC unit
+msp430fr2155 = ["2x5x"]           # 32kB FRAM
+msp430fr2153 = ["2x5x"]           # 16kB FRAM
 2x5x = ["dep:msp430fr2355", "info_mem", "enhanced_ref"]
 enhanced_ref = []
-sac = []
+sac_l3 = []
+sac_l1 = []
 tia = []
 info_mem = []
 
