@@ -44,7 +44,6 @@ pub mod adc;
 pub mod bak_mem;
 pub mod batch_gpio;
 pub mod capture;
-pub mod clock;
 pub mod crc;
 pub mod delay;
 pub mod ecomp;
@@ -62,6 +61,14 @@ pub mod serial;
 pub mod spi;
 pub mod timer;
 pub mod watchdog;
+
+#[cfg(feature = "2x5x")]
+#[path="clock_enhanced.rs"]
+pub mod clock;
+
+#[cfg(not(feature = "2x5x"))]
+#[path="clock_basic.rs"]
+pub mod clock;
 
 mod device_specific;
 mod hw_traits;

@@ -1,5 +1,4 @@
-// This file re-exports modules that may be unique to a particular device model.
-// e.g. the clock system being either the basic or enhanced version
+// This file re-exports modules that may be unique to a particular device model in a generic manner.
 // Business logic for device-specific implementations are handled in the device_specific/ folder
 
 #[cfg(feature = "2x5x")]
