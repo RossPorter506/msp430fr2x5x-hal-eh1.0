@@ -519,3 +519,28 @@ mod spi {
     pub struct UsciB1STEPin;
     impl_spi_pin!(UsciB1STEPin, P4, Pin4);
 }
+
+/* Timer */
+mod timer {
+    use crate::{pac, gpio::*, timer::*};
+    
+    impl TimerPeriph for pac::TB0 {
+        type Tbxclk = Pin<P2, Pin7, Alternate1<Input<Floating>>>;
+    }
+    impl CapCmpTimer3 for pac::TB0 {}
+
+    impl TimerPeriph for pac::TB1 {
+        type Tbxclk = Pin<P2, Pin2, Alternate1<Input<Floating>>>;
+    }
+    impl CapCmpTimer3 for pac::TB1 {}
+
+    impl TimerPeriph for pac::TB2 {
+        type Tbxclk = Pin<P5, Pin2, Alternate1<Input<Floating>>>;
+    }
+    impl CapCmpTimer3 for pac::TB2 {}
+
+    impl TimerPeriph for pac::TB3 {
+        type Tbxclk = Pin<P6, Pin6, Alternate1<Input<Floating>>>;
+    }
+    impl CapCmpTimer7 for pac::TB3 {}
+}
