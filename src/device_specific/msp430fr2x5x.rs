@@ -250,3 +250,43 @@ pub mod ecomp {
         cp1int, cp1iv
     );
 }
+
+/* I2C */
+mod i2c {
+    use crate::{pac, gpio::*, i2c::{impl_i2c_pin, I2cUsci}};
+
+    /// I2C SCL pin for eUSCI B0
+    pub struct UsciB0SCLPin;
+    impl_i2c_pin!(UsciB0SCLPin, P1, Pin3);
+
+    /// I2C SDA pin for eUSCI B0
+    pub struct UsciB0SDAPin;
+    impl_i2c_pin!(UsciB0SDAPin, P1, Pin2);
+
+    /// UCLKI pin for eUSCI B0. Used as an external clock source.
+    pub struct UsciB0UCLKIPin;
+    impl_i2c_pin!(UsciB0UCLKIPin, P1, Pin1);
+
+    /// I2C SCL pin for eUSCI B1
+    pub struct UsciB1SCLPin;
+    impl_i2c_pin!(UsciB1SCLPin, P4, Pin7);
+
+    /// I2C SDA pin for eUSCI B1
+    pub struct UsciB1SDAPin;
+    impl_i2c_pin!(UsciB1SDAPin, P4, Pin6);
+
+    /// UCLKI pin for eUSCI B1. Used as an external clock source.
+    pub struct UsciB1UCLKIPin;
+    impl_i2c_pin!(UsciB1UCLKIPin, P4, Pin5);
+
+    impl I2cUsci for pac::E_USCI_B0 {
+        type ClockPin = UsciB0SCLPin;
+        type DataPin = UsciB0SDAPin;
+        type ExternalClockPin = UsciB0UCLKIPin;
+    }
+    impl I2cUsci for pac::E_USCI_B1 {
+        type ClockPin = UsciB1SCLPin;
+        type DataPin = UsciB1SDAPin;
+        type ExternalClockPin = UsciB1UCLKIPin;
+    }
+}
