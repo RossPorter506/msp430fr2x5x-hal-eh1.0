@@ -95,6 +95,9 @@ mod adc {
     impl_adc_channel_pin!(P5, Pin3, 11);
 }
 
+/* Backup Memory */
+pub const BAK_MEM_SIZE: usize = 32;
+
 /* Capture */
 mod capture {
     use crate::{pac, gpio::*, capture::CapturePeriph};
