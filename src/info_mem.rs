@@ -15,6 +15,7 @@ pub struct System(SYS);
 
 /// Start address of the information memory
 const INFO_MEM_START_ADDR: *mut u8 = 0x1800 as *mut u8;
+const INFO_MEM_SIZE: usize = 512;
 const SYSCFG0_PASSWORD: u8 = 0xA5;
 
 macro_rules! as_x {
@@ -23,6 +24,7 @@ macro_rules! as_x {
         #[doc = "` and return a mutable reference to it."]
         #[inline(always)]
         pub fn $fn_name(mut sys: SYS) -> (&'static mut $arr, System) {
+            const { assert!( core::mem::size_of::<$arr>() == INFO_MEM_SIZE ) }
             Self::disable_write_protect(&mut sys);
             let arr = unsafe { &mut *(INFO_MEM_START_ADDR as *mut $arr) };
             (arr, System(sys))

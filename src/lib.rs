@@ -50,7 +50,6 @@ pub mod ecomp;
 pub mod fram;
 pub mod gpio;
 pub mod i2c;
-pub mod info_mem;
 pub mod lpm;
 pub mod pmm;
 pub mod prelude;
@@ -69,6 +68,9 @@ pub mod clock;
 #[cfg(not(feature = "2x5x"))]
 #[path="clock_basic.rs"]
 pub mod clock;
+
+#[cfg(feature = "info_mem")]
+pub mod info_mem;
 
 mod device_specific;
 mod hw_traits;
