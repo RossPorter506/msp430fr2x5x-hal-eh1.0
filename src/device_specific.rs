@@ -3,6 +3,8 @@
 
 #[cfg(feature = "2x5x")]
 pub mod msp430fr2x5x;
+#[cfg(feature = "2x5x")]
+pub use msp430fr2x5x::ecomp::{PositiveInput, NegativeInput};
 
 #[cfg(feature = "2x5x")]
 pub use msp430fr2355 as pac;
