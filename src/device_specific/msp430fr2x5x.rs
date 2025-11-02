@@ -290,3 +290,64 @@ mod i2c {
         type ExternalClockPin = UsciB1UCLKIPin;
     }
 }
+
+/* PWM */
+mod pwm {
+    use crate::{pac, gpio::*, pwm::*};
+
+    // TB0
+    impl PwmPeriph<CCR1> for pac::TB0 {
+        type Gpio = Pin<P1, Pin6, Alternate2<Output>>;
+        const ALT: Alt = Alt::Alt2;
+    }
+    impl PwmPeriph<CCR2> for pac::TB0 {
+        type Gpio = Pin<P1, Pin7, Alternate2<Output>>;
+        const ALT: Alt = Alt::Alt2;
+    }
+
+    // TB1
+    impl PwmPeriph<CCR1> for pac::TB1 {
+        type Gpio = Pin<P2, Pin0, Alternate1<Output>>;
+        const ALT: Alt = Alt::Alt1;
+    }
+    impl PwmPeriph<CCR2> for pac::TB1 {
+        type Gpio = Pin<P2, Pin1, Alternate1<Output>>;
+        const ALT: Alt = Alt::Alt1;
+    }
+
+    // TB2
+    impl PwmPeriph<CCR1> for pac::TB2 {
+        type Gpio = Pin<P5, Pin0, Alternate1<Output>>;
+        const ALT: Alt = Alt::Alt1;
+    }
+    impl PwmPeriph<CCR2> for pac::TB2 {
+        type Gpio = Pin<P5, Pin1, Alternate1<Output>>;
+        const ALT: Alt = Alt::Alt1;
+    }
+
+    // TB3
+    impl PwmPeriph<CCR1> for pac::TB3 {
+        type Gpio = Pin<P6, Pin0, Alternate1<Output>>;
+        const ALT: Alt = Alt::Alt1;
+    }
+    impl PwmPeriph<CCR2> for pac::TB3 {
+        type Gpio = Pin<P6, Pin1, Alternate1<Output>>;
+        const ALT: Alt = Alt::Alt1;
+    }
+    impl PwmPeriph<CCR3> for pac::TB3 {
+        type Gpio = Pin<P6, Pin2, Alternate1<Output>>;
+        const ALT: Alt = Alt::Alt1;
+    }
+    impl PwmPeriph<CCR4> for pac::TB3 {
+        type Gpio = Pin<P6, Pin3, Alternate1<Output>>;
+        const ALT: Alt = Alt::Alt1;
+    }
+    impl PwmPeriph<CCR5> for pac::TB3 {
+        type Gpio = Pin<P6, Pin4, Alternate1<Output>>;
+        const ALT: Alt = Alt::Alt1;
+    }
+    impl PwmPeriph<CCR6> for pac::TB3 {
+        type Gpio = Pin<P6, Pin5, Alternate1<Output>>;
+        const ALT: Alt = Alt::Alt1;
+    }
+}
