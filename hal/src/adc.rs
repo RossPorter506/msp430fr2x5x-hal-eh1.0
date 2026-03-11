@@ -138,6 +138,10 @@ impl ClockDivider {
     fn adcdiv(self) -> u8 {
         self as u8
     }
+    /// The divider value as an integer
+    pub const fn value(&self) -> u8 {
+        (*self as u8) + 1
+    }
 }
 
 #[derive(Default, Copy, Clone, PartialEq, Eq)]
@@ -176,6 +180,14 @@ impl Predivider {
     #[inline(always)]
     fn adcpdiv(self) -> u8 {
         self as u8
+    }
+    /// The divider value as an integer
+    pub const fn value(&self) -> u8 {
+        match self {
+            Predivider::_1 => 1,
+            Predivider::_4 => 4,
+            Predivider::_64 => 64,
+        }
     }
 }
 

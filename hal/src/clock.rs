@@ -13,13 +13,60 @@ use core::arch::asm;
 use crate::delay::SysDelay;
 use crate::fram::{Fram, WaitStates};
 use crate::_pac::{self, cs::{csctl1::Dcorsel, csctl4::{Sela, Selms}}};
-pub use crate::_pac::cs::csctl5::{Divm as MclkDiv, Divs as SmclkDiv};
 
 /// REFOCLK frequency
 pub const REFOCLK_FREQ_HZ: u16 = 32768;
 /// VLOCLK frequency
 pub const VLOCLK_FREQ_HZ: u16 = 10000;
 pub use crate::device_specific::MODCLK_FREQ_HZ;
+
+#[derive(Copy, Clone)]
+/// Clock divider for MCLK
+pub enum MclkDiv {
+    /// MCLK = CLK_SRC / 1
+    _1   = 0,
+    /// MCLK = CLK_SRC / 2
+    _2   = 1,
+    /// MCLK = CLK_SRC / 4
+    _4   = 2,
+    /// MCLK = CLK_SRC / 8
+    _8   = 3,
+    /// MCLK = CLK_SRC / 16
+    _16  = 4,
+    /// MCLK = CLK_SRC / 32
+    _32  = 5,
+    /// MCLK = CLK_SRC / 64
+    _64  = 6,
+    /// MCLK = CLK_SRC / 128
+    _128 = 7,
+}
+impl MclkDiv {
+    /// The divider value as an integer
+    pub const fn value(&self) -> u8 {
+        1 << (*self as u8)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+/// Clock divider for SMCLK
+pub enum SmclkDiv {
+    /// SMCLK = MCLK / 1
+    _1 = 0,
+    /// SMCLK = MCLK / 2
+    _2 = 1,
+    /// SMCLK = MCLK / 4
+    _4 = 2,
+    /// SMCLK = MCLK / 8
+    _8 = 3,
+}
+impl SmclkDiv {
+    /// The divider value as an integer
+    pub const fn value(&self) -> u8 {
+        1 << (*self as u8)
+    }
+}
+
 
 enum MclkSel {
     Refoclk,
@@ -117,7 +164,7 @@ impl DcoclkFreqSel {
     }
 
     #[inline(always)]
-    fn multiplier(self) -> u16 {
+    const fn multiplier(self) -> u16 {
         match self {
             DcoclkFreqSel::_1MHz => 32,
             DcoclkFreqSel::_2MHz => 61,
@@ -134,7 +181,7 @@ impl DcoclkFreqSel {
 
     /// Numerical frequency
     #[inline]
-    pub fn freq(self) -> u32 {
+    pub const fn freq(self) -> u32 {
         (self.multiplier() as u32) * (REFOCLK_FREQ_HZ as u32)
     }
 }
@@ -319,10 +366,13 @@ impl<SMCLK: SmclkState> ClockConfig<MclkDefined, SMCLK> {
         });
 
         self.periph.csctl5().write(|w| {
-            let w = w.vloautooff().set_bit().divm().variant(self.mclk_div);
-            match self.smclk.div() {
-                Some(div) => w.divs().variant(div),
-                None => w.smclkoff().set_bit(),
+            unsafe {
+                w.vloautooff().set_bit();
+                w.divm().bits(self.mclk_div as u8);
+                match self.smclk.div() {
+                    Some(div) => w.divs().bits(div as u8),
+                    None => w.smclkoff().set_bit(),
+                }
             }
         });
     }

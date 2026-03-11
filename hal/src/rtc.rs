@@ -53,7 +53,42 @@ impl Rtc<RtcVloclk> {
     }
 }
 
-pub use crate::_pac::rtc::rtcctl::Rtcps as RtcDiv;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+/// Clock divider for the RTC input clock
+pub enum RtcDiv {
+    /// RTC predivider: /1
+    _1 = 0,
+    /// RTC predivider: /10
+    _10 = 1,
+    /// RTC predivider: /100
+    _100 = 2,
+    /// RTC predivider: /1000
+    _1000 = 3,
+    /// RTC predivider: /16
+    _16 = 4,
+    /// RTC predivider: /64
+    _64 = 5,
+    /// RTC predivider: /256
+    _256 = 6,
+    /// RTC predivider: /1024
+    _1024 = 7,
+}
+impl RtcDiv {
+    /// The divider value as an integer
+    pub const fn value(&self) -> u16 {
+        match self {
+            RtcDiv::_1    => 1,
+            RtcDiv::_10   => 10,
+            RtcDiv::_100  => 100,
+            RtcDiv::_1000 => 1000,
+            RtcDiv::_16   => 16,
+            RtcDiv::_64   => 64,
+            RtcDiv::_256  => 256,
+            RtcDiv::_1024 => 1024,
+        }
+    }
+}
 
 impl<SRC: RtcClockSrc> Rtc<SRC> {
     /// Configure the RTC to use SMCLK as clock source. Setting comes in effect the next time RTC
@@ -81,7 +116,7 @@ impl<SRC: RtcClockSrc> Rtc<SRC> {
     pub fn set_clk_div(&mut self, div: RtcDiv) {
         self.periph
             .rtcctl()
-            .modify(|r, w| unsafe { w.bits(r.bits()) }.rtcps().variant(div));
+            .modify(|r, w| unsafe { w.bits(r.bits()).rtcps().bits(div as u8)});
     }
 
     /// Enable RTC timer interrupts

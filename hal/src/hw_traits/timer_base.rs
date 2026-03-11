@@ -10,35 +10,49 @@ pub enum Tbssel {
 }
 
 /// Timer clock divider
+#[derive(Copy, Clone)]
 pub enum TimerDiv {
     /// No division
-    _1,
+    _1 = 0,
     /// Divide by 2
-    _2,
+    _2 = 1,
     /// Divide by 4
-    _4,
+    _4 = 2,
     /// Divide by 8
-    _8,
+    _8 = 3,
+}
+impl TimerDiv {
+    /// The divider value as an integer
+    pub const fn value(&self) -> u8 {
+        1 << (*self as u8)
+    }
 }
 
 /// Timer expansion clock divider, applied on top of the normal clock divider
+#[derive(Copy, Clone)]
 pub enum TimerExDiv {
     /// No division
-    _1,
+    _1 = 0,
     /// Divide by 2
-    _2,
+    _2 = 1,
     /// Divide by 3
-    _3,
+    _3 = 2,
     /// Divide by 4
-    _4,
+    _4 = 3,
     /// Divide by 5
-    _5,
+    _5 = 4,
     /// Divide by 6
-    _6,
+    _6 = 5,
     /// Divide by 7
-    _7,
+    _7 = 6,
     /// Divide by 8
-    _8,
+    _8 = 7,
+}
+impl TimerExDiv {
+    /// The divider value as an integer
+    pub const fn value(&self) -> u8 {
+        (*self as u8) + 1
+    }
 }
 
 pub enum Outmod {

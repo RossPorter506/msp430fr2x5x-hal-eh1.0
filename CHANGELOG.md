@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
 - Add defmt support through `defmt` feature flag.
+- Added const functions to various clock sources and divider enums to get numerical values
 
 ## [v0.6.1] - 2026-03-11
 - Fix missing readme on crates.io
